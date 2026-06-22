@@ -44,6 +44,7 @@ const JIKAN_ENDPOINT = 'https://api.jikan.moe/v4'
 const LIVE_SEARCH_DELAY_MS = 340
 const MIN_SEARCH_LENGTH = 2
 const JIKAN_PAGE_DELAY_MS = 360
+const SMART_RECOMMENDATION_DISPLAY_LIMIT = 4
 
 type WatchStatus = 'watching' | 'planning' | 'completed' | 'paused' | 'dropped'
 type RewatchStatus = 'none' | 'planned' | 'rewatching'
@@ -4522,7 +4523,7 @@ function SmartShelvesPanel({
                 <span>{recommendationShelf.error}</span>
               </div>
             ) : recommendationCount ? (
-              recommendationShelf.recommendations?.slice(0, 3).map((recommendation) => (
+              recommendationShelf.recommendations?.slice(0, SMART_RECOMMENDATION_DISPLAY_LIMIT).map((recommendation) => (
                 <div className="smart-recommendation-row" key={recommendation.anilistId}>
                   <img src={recommendation.coverImage || artPanels[2]} alt="" />
                   <div>

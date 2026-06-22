@@ -2183,7 +2183,7 @@
 }
 
 .recommendation-intro-art {
-  min-height: 166px;
+  min-height: 232px;
   position: relative;
   overflow: hidden;
   margin-top: 14px;
@@ -2208,7 +2208,7 @@
 .recommendation-intro-art img {
   width: 100%;
   height: 100%;
-  min-height: 166px;
+  min-height: 232px;
   display: block;
   object-fit: cover;
   object-position: 42% 52%;
