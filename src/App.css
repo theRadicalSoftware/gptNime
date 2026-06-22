@@ -2149,13 +2149,14 @@
 .smart-shelf-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
   gap: 10px;
 }
 
 .smart-shelf-card {
   min-width: 0;
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: auto auto;
   gap: 12px;
   padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -2164,7 +2165,11 @@
 }
 
 .smart-shelf-card-recommendations {
-  grid-column: span 2;
+  grid-template-columns: minmax(220px, 0.78fr) minmax(0, 1.5fr);
+  grid-template-rows: auto;
+  align-items: start;
+  gap: 18px;
+  padding: 14px;
   background:
     linear-gradient(135deg, rgba(48, 150, 166, 0.1), rgba(229, 193, 124, 0.055)),
     rgba(12, 11, 12, 0.5);
@@ -2302,8 +2307,7 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0;
   color: var(--soft);
   font-size: 0.82rem;
   font-weight: 800;
@@ -4464,10 +4468,6 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .smart-shelf-card-recommendations {
-    grid-column: span 2;
-  }
-
   .detail-panel {
     position: static;
   }
@@ -4530,7 +4530,7 @@
   }
 
   .smart-shelf-card-recommendations {
-    grid-column: auto;
+    grid-template-columns: 1fr;
   }
 
   .smart-recommendation-row {

@@ -4481,6 +4481,10 @@ function SmartShelvesPanel({
 }) {
   if (!shelves.length) return null
 
+  const recommendationShelf = shelves.find((shelf) => shelf.recommendations)
+  const compactShelves = shelves.filter((shelf) => !shelf.recommendations)
+  const recommendationCount = recommendationShelf?.recommendations?.length || 0
+
   return (
     <section className="smart-shelves-panel">
       <div className="section-heading">
@@ -4490,99 +4494,106 @@ function SmartShelvesPanel({
         </div>
         <ListFilter size={19} />
       </div>
-      <div className="smart-shelf-grid">
-        {shelves.map((shelf) => {
-          const recommendationCount = shelf.recommendations?.length || 0
-          const shelfCount = shelf.recommendations ? recommendationCount : shelf.entries.length
 
-          return (
-            <article
-              className={shelf.recommendations ? 'smart-shelf-card smart-shelf-card-recommendations' : 'smart-shelf-card'}
-              key={shelf.id}
-            >
+      {recommendationShelf && (
+        <article className="smart-shelf-card smart-shelf-card-recommendations">
+          <div>
+            <span>
+              {recommendationShelf.loading
+                ? 'Tuning'
+                : `${recommendationCount} title${recommendationCount === 1 ? '' : 's'}`}
+            </span>
+            <strong>{recommendationShelf.label}</strong>
+            <p>{recommendationShelf.description}</p>
+          </div>
+
+          <div className="smart-recommendation-list">
+            {recommendationShelf.loading ? (
+              <div className="smart-recommendation-state">
+                <Loader2 size={16} />
+                <span>Reading your strongest signals...</span>
+              </div>
+            ) : recommendationShelf.error ? (
+              <div className="smart-recommendation-state smart-recommendation-state-error">
+                <Info size={16} />
+                <span>{recommendationShelf.error}</span>
+              </div>
+            ) : recommendationCount ? (
+              recommendationShelf.recommendations?.slice(0, 3).map((recommendation) => (
+                <div className="smart-recommendation-row" key={recommendation.anilistId}>
+                  <img src={recommendation.coverImage || artPanels[2]} alt="" />
+                  <div>
+                    <strong>{recommendation.title}</strong>
+                    <span>
+                      {[
+                        recommendation.format?.replace(/_/g, ' '),
+                        formatSeason(recommendation) === '-' ? '' : formatSeason(recommendation),
+                      ].filter(Boolean).join(' • ') || 'Anime'}
+                    </span>
+                    <p>
+                      Based on {recommendation.recommendedFrom.slice(0, 2).join(', ')}
+                      {recommendation.recommendedFrom.length > 2 ? ` +${recommendation.recommendedFrom.length - 2}` : ''}
+                    </p>
+                    <div className="smart-recommendation-tags">
+                      {recommendation.genres.slice(0, 2).map((genre) => (
+                        <em key={genre}>{genre}</em>
+                      ))}
+                      {(recommendation.averageScore || recommendation.meanScore) && (
+                        <em>{recommendation.averageScore || recommendation.meanScore}%</em>
+                      )}
+                    </div>
+                  </div>
+                  <div className="smart-recommendation-actions">
+                    <button className="mini-button" type="button" onClick={() => addFromSearch(recommendation, 'planning')}>
+                      <CalendarDays size={13} />
+                      <span>Plan</span>
+                    </button>
+                    <button className="mini-button result-primary strong" type="button" onClick={() => addFromSearch(recommendation, 'watching')}>
+                      <Play size={13} />
+                      <span>Watch</span>
+                    </button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="smart-recommendation-state">
+                <Sparkles size={16} />
+                <span>Rate or favorite a few titles to tune fresh picks.</span>
+              </div>
+            )}
+          </div>
+        </article>
+      )}
+
+      {compactShelves.length ? (
+        <div className="smart-shelf-grid">
+          {compactShelves.map((shelf) => (
+            <article className="smart-shelf-card" key={shelf.id}>
               <div>
-                <span>{shelf.loading ? 'Tuning' : `${shelfCount} title${shelfCount === 1 ? '' : 's'}`}</span>
+                <span>{shelf.entries.length} title{shelf.entries.length === 1 ? '' : 's'}</span>
                 <strong>{shelf.label}</strong>
                 <p>{shelf.description}</p>
               </div>
 
-              {shelf.recommendations ? (
-                <div className="smart-recommendation-list">
-                  {shelf.loading ? (
-                    <div className="smart-recommendation-state">
-                      <Loader2 size={16} />
-                      <span>Reading your strongest signals...</span>
-                    </div>
-                  ) : shelf.error ? (
-                    <div className="smart-recommendation-state smart-recommendation-state-error">
-                      <Info size={16} />
-                      <span>{shelf.error}</span>
-                    </div>
-                  ) : recommendationCount ? (
-                    shelf.recommendations?.slice(0, 3).map((recommendation) => (
-                      <div className="smart-recommendation-row" key={recommendation.anilistId}>
-                        <img src={recommendation.coverImage || artPanels[2]} alt="" />
-                        <div>
-                          <strong>{recommendation.title}</strong>
-                          <span>
-                            {[
-                              recommendation.format?.replace(/_/g, ' '),
-                              formatSeason(recommendation) === '-' ? '' : formatSeason(recommendation),
-                            ].filter(Boolean).join(' • ') || 'Anime'}
-                          </span>
-                          <p>
-                            Based on {recommendation.recommendedFrom.slice(0, 2).join(', ')}
-                            {recommendation.recommendedFrom.length > 2 ? ` +${recommendation.recommendedFrom.length - 2}` : ''}
-                          </p>
-                          <div className="smart-recommendation-tags">
-                            {recommendation.genres.slice(0, 2).map((genre) => (
-                              <em key={genre}>{genre}</em>
-                            ))}
-                            {(recommendation.averageScore || recommendation.meanScore) && (
-                              <em>{recommendation.averageScore || recommendation.meanScore}%</em>
-                            )}
-                          </div>
-                        </div>
-                        <div className="smart-recommendation-actions">
-                          <button className="mini-button" type="button" onClick={() => addFromSearch(recommendation, 'planning')}>
-                            <CalendarDays size={13} />
-                            <span>Plan</span>
-                          </button>
-                          <button className="mini-button result-primary strong" type="button" onClick={() => addFromSearch(recommendation, 'watching')}>
-                            <Play size={13} />
-                            <span>Watch</span>
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="smart-recommendation-state">
-                      <Sparkles size={16} />
-                      <span>Rate or favorite a few titles to tune fresh picks.</span>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="smart-shelf-covers">
-                  {shelf.entries.slice(0, 4).map((entry) => (
-                    <button
-                      key={entry.id}
-                      type="button"
-                      title={entry.title}
-                      onClick={() => {
-                        setSelectedId(entry.id)
-                        setView('library')
-                      }}
-                    >
-                      <img src={entry.coverImage || artPanels[2]} alt="" />
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div className="smart-shelf-covers">
+                {shelf.entries.slice(0, 4).map((entry) => (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    title={entry.title}
+                    onClick={() => {
+                      setSelectedId(entry.id)
+                      setView('library')
+                    }}
+                  >
+                    <img src={entry.coverImage || artPanels[2]} alt="" />
+                  </button>
+                ))}
+              </div>
             </article>
-          )
-        })}
-      </div>
+          ))}
+        </div>
+      ) : null}
     </section>
   )
 }
