@@ -4497,7 +4497,7 @@ function SmartShelvesPanel({
 
       {recommendationShelf && (
         <article className="smart-shelf-card smart-shelf-card-recommendations">
-          <div>
+          <div className="smart-recommendation-intro">
             <span>
               {recommendationShelf.loading
                 ? 'Tuning'
@@ -4505,6 +4505,9 @@ function SmartShelvesPanel({
             </span>
             <strong>{recommendationShelf.label}</strong>
             <p>{recommendationShelf.description}</p>
+            <div className="recommendation-intro-art" aria-hidden="true">
+              <img src="/art/recommendation-keeper.png" alt="" />
+            </div>
           </div>
 
           <div className="smart-recommendation-list">

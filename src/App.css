@@ -2175,6 +2175,47 @@
     rgba(12, 11, 12, 0.5);
 }
 
+.smart-recommendation-intro {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 0;
+}
+
+.recommendation-intro-art {
+  min-height: 166px;
+  position: relative;
+  overflow: hidden;
+  margin-top: 14px;
+  border: 1px solid rgba(229, 193, 124, 0.16);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(229, 193, 124, 0.08), rgba(48, 150, 166, 0.08)),
+    rgba(12, 11, 12, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.035);
+}
+
+.recommendation-intro-art::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(12, 11, 12, 0.04), rgba(12, 11, 12, 0.32)),
+    radial-gradient(circle at 32% 34%, transparent 0 34%, rgba(12, 11, 12, 0.2) 70%);
+}
+
+.recommendation-intro-art img {
+  width: 100%;
+  height: 100%;
+  min-height: 166px;
+  display: block;
+  object-fit: cover;
+  object-position: 42% 52%;
+  filter: saturate(0.86) contrast(1.04) brightness(0.82);
+  opacity: 0.9;
+}
+
 .smart-shelf-card strong {
   display: block;
   margin-top: 5px;
@@ -4531,6 +4572,11 @@
 
   .smart-shelf-card-recommendations {
     grid-template-columns: 1fr;
+  }
+
+  .recommendation-intro-art,
+  .recommendation-intro-art img {
+    min-height: 132px;
   }
 
   .smart-recommendation-row {
