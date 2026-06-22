@@ -16,6 +16,7 @@ GPTNime is a local-first anime watch ledger for tracking what you are watching, 
 - Anime-channel view with local video file playback, VTT subtitles, playback speed, Picture-in-Picture, mini-player mode, next-episode queue, and 90% auto mark-watched.
 - Subtle easter eggs and ambient touches documented in [`docs/EASTER_EGGS.md`](docs/EASTER_EGGS.md).
 - Project-level UI conventions documented in [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md).
+- Local launcher setup documented in [`docs/LOCAL_LAUNCHER.md`](docs/LOCAL_LAUNCHER.md).
 - Project workflow reminders documented in [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
 
 ## Tech Stack
@@ -36,6 +37,12 @@ npm run dev -- --host 127.0.0.1 --port 5190
 ```
 
 Open `http://127.0.0.1:5190/`.
+
+To install the searchable local launcher:
+
+```bash
+./scripts/install-local-launcher.sh
+```
 
 ## Build And Check
 
@@ -65,9 +72,11 @@ src/
   index.css      Global base styles.
 public/
   art/           App artwork used by the dashboard, library, and channel surfaces.
+  brand/         Generated launcher icon and logo lockup assets.
 docs/
   EASTER_EGGS.md Subtle easter eggs and quiet UX touches.
   DESIGN_NOTES.md Project-level UI conventions.
+  LOCAL_LAUNCHER.md Desktop launcher setup and asset notes.
   WORKFLOW.md     Commit and GitHub push expectations.
 ```
 
