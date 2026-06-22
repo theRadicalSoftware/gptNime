@@ -15,6 +15,7 @@ GPTNime is a local-first anime watch ledger for tracking what you are watching, 
 - Notification drawer with stale threshold, snooze, dismiss, mute title, watching-only, and high-priority-only controls.
 - Anime-channel view with local video file playback, VTT subtitles, playback speed, Picture-in-Picture, mini-player mode, next-episode queue, and 90% auto mark-watched.
 - Subtle easter eggs and ambient touches documented in [`docs/EASTER_EGGS.md`](docs/EASTER_EGGS.md).
+- Project-level UI conventions documented in [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md).
 
 ## Tech Stack
 
@@ -65,6 +66,7 @@ public/
   art/           App artwork used by the dashboard, library, and channel surfaces.
 docs/
   EASTER_EGGS.md Subtle easter eggs and quiet UX touches.
+  DESIGN_NOTES.md Project-level UI conventions.
 ```
 
 ## External APIs
