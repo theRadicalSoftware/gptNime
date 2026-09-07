@@ -162,6 +162,19 @@ try {
   assert.ok(!stored.includes('media.example.test'))
   passed('VTT subtitles and direct video URLs load; media URLs are not persisted')
 
+  // A provider's iframe policy is not a blanket ban on that provider's media host.
+  // This is a routing fixture, not evidence of successful live WCO playback.
+  const providerMediaUrl = 'https://u44.wcostream.com/getvid?evid=cinema-test-fixture'
+  await context.route(providerMediaUrl, (route) => route.fulfill({ contentType: 'video/webm', body: bytes }))
+  await page.getByLabel('Direct video URL', { exact: true }).fill(providerMediaUrl)
+  await page.getByRole('button', { name: 'Load video', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('video')?.readyState >= 2)
+  assert.equal(await page.locator('video').getAttribute('src'), providerMediaUrl)
+  await page.locator('video').evaluate((video) => { video.currentTime = 4 })
+  await page.getByRole('button', { name: 'Clear source' }).click()
+  assert.ok(!(await page.evaluate(() => localStorage.getItem('gptnime-cinema-v1'))).includes('cinema-test-fixture'))
+  passed('Direct media is not rejected solely for a WCO CDN hostname; references stay session-only')
+
   await page.getByRole('button', { name: 'Close cinema', exact: true }).click()
   await page.getByRole('button', { name: 'Library', exact: true }).first().click()
   await page.locator('.anime-card').first().waitFor()

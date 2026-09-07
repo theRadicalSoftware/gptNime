@@ -53,7 +53,9 @@ export function mediaUrl(value: string): string | null {
     const url = new URL(value.trim())
     if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return null
     if (url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) return null
-    if (pageHosts.has(url.hostname.replace(/^www\./, '')) || /(^|\.)wcostream\.com$/.test(url.hostname)) return null
+    // Catalogue pages belong in the provider tab. A CDN hostname alone does not
+    // establish that its media is unplayable: let normal browser delivery decide.
+    if (pageHosts.has(url.hostname.replace(/^www\./, ''))) return null
     return url.href
   } catch { return null }
 }
