@@ -35,6 +35,8 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
+import WatchCinema from './watch/WatchCinema'
+import type { WatchRequest } from './watch/watchState'
 
 const STORAGE_KEY = 'gptnime-tracker-library-v1'
 const FOCUS_LAYOUT_KEY = 'gptnime-focus-layout-v1'
@@ -1658,22 +1660,6 @@ function formatSeason(entry: SearchResult) {
   return [entry.season, entry.seasonYear].filter(Boolean).join(' ') || '-'
 }
 
-const streamingSitePattern = /(crunchyroll|netflix|hulu|hidive|disney|prime video|amazon|youtube|bilibili|tubi|hbo|max|pluto|adult swim|vrv)/i
-
-function officialWatchLinksFor(entry: AnimeEntry) {
-  const seen = new Set<string>()
-
-  return (entry.externalLinks || [])
-    .filter((link) => {
-      if (!link.url || seen.has(link.url)) return false
-      const type = link.type?.toLowerCase() || ''
-      const watchLike = type.includes('streaming') || streamingSitePattern.test(link.site)
-      if (watchLike) seen.add(link.url)
-      return watchLike
-    })
-    .slice(0, 4)
-}
-
 function episodeRowsFor(entry: AnimeEntry): EpisodeInfo[] {
   if (entry.episodeList?.length) return entry.episodeList
   if (!entry.episodesTotal) return []
@@ -2054,6 +2040,7 @@ function App() {
   const [sageMode, setSageMode] = useState(() => localStorage.getItem(SAGE_MODE_KEY) === 'on')
   const [notificationDrawerOpen, setNotificationDrawerOpen] = useState(false)
   const [animeChannelOpen, setAnimeChannelOpen] = useState(false)
+  const [watchRequest, setWatchRequest] = useState<WatchRequest | null>(null)
   const [brandPulse, setBrandPulse] = useState(false)
   const [currentTime, setCurrentTime] = useState(() => new Date())
   const [endCard, setEndCard] = useState<EndCardSnapshot | null>(null)
@@ -2099,17 +2086,16 @@ function App() {
   }, [searchTerm])
 
   useEffect(() => {
-    if (!notificationDrawerOpen && !animeChannelOpen) return
+    if (!notificationDrawerOpen) return
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
+      if (event.key !== 'Escape' || event.defaultPrevented) return
       setNotificationDrawerOpen(false)
-      setAnimeChannelOpen(false)
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [animeChannelOpen, notificationDrawerOpen])
+  }, [notificationDrawerOpen])
 
   useEffect(() => {
     if (selectedId && library.some((entry) => entry.id === selectedId)) return
@@ -2423,15 +2409,21 @@ function App() {
   }, [continueEntries, library])
 
   const floatingWatchLabel = animeChannelEntries.length
-    ? `Open anime channel: ${animeChannelEntries.length} watching`
-    : 'Open anime channel'
+    ? `Open cinema: ${animeChannelEntries.length} watching`
+    : 'Open cinema'
 
-  const openChannelEntry = useCallback((entry: AnimeEntry) => {
-    setSelectedId(entry.id)
-    setView('library')
-    setAnimeChannelOpen(false)
+  const openWatch = useCallback((entry: AnimeEntry, episode?: number) => {
+    setWatchRequest((current) => ({ id: entry.id, episode, serial: (current?.serial || 0) + 1 }))
+    setAnimeChannelOpen(true)
+    setFocusModalOpen(false)
     setNotificationDrawerOpen(false)
+    setEndCard(null)
   }, [])
+
+  const cinemaEntries = useMemo(() => {
+    const queued = new Set(animeChannelEntries.map((entry) => entry.id))
+    return [...animeChannelEntries, ...library.filter((entry) => !queued.has(entry.id))]
+  }, [animeChannelEntries, library])
 
 	  const trimmedSearchTerm = searchTerm.trim()
   const showSearchPanel =
@@ -2679,7 +2671,7 @@ function App() {
     )
   }
 
-	  const changeProgress = (entry: AnimeEntry, nextProgress: number) => {
+	  const changeProgress = (entry: AnimeEntry, nextProgress: number, celebrate = true) => {
     const capped = entry.episodesTotal
       ? Math.min(entry.episodesTotal, Math.max(0, nextProgress))
       : Math.max(0, nextProgress)
@@ -2688,7 +2680,7 @@ function App() {
     const now = new Date().toISOString()
     const completed = entry.episodesTotal ? capped >= entry.episodesTotal : false
     const nextStatus: WatchStatus = completed ? 'completed' : entry.status === 'planning' ? 'watching' : entry.status
-    const showEndCard = completed && !isCompletedEntry(entry)
+    const showEndCard = celebrate && completed && !isCompletedEntry(entry)
 
     setLastProgressChange({
       entryId: entry.id,
@@ -3199,6 +3191,7 @@ function App() {
               exit={{ opacity: 0, y: -12 }}
             >
               <Dashboard
+                onWatch={openWatch}
                 stats={stats}
                 library={library}
 	                history={history}
@@ -3228,6 +3221,7 @@ function App() {
               exit={{ opacity: 0, y: -12 }}
             >
               <LibraryView
+                onWatch={openWatch}
                 entries={filteredLibrary}
                 allCount={library.length}
                 selectedEntry={selectedEntry}
@@ -3296,11 +3290,15 @@ function App() {
 
       <AnimatePresence>
         {animeChannelOpen ? (
-          <AnimeChannelPanel
-            entries={animeChannelEntries}
-            changeProgress={changeProgress}
-            close={() => setAnimeChannelOpen(false)}
-            onOpenEntry={openChannelEntry}
+          <WatchCinema
+            entries={cinemaEntries}
+            request={watchRequest}
+            onComplete={(id, episode) => {
+              const entry = library.find((item) => item.id === id)
+              if (entry && episode > entry.progress) changeProgress(entry, episode, false)
+            }}
+            onClose={() => setAnimeChannelOpen(false)}
+            onDetails={(id) => { setSelectedId(id); setView('library') }}
           />
         ) : (
           <motion.button
@@ -3318,6 +3316,7 @@ function App() {
             whileTap={{ scale: 0.96 }}
             onClick={() => {
               setNotificationDrawerOpen(false)
+              setWatchRequest(null)
               setAnimeChannelOpen(true)
             }}
           >
@@ -3347,6 +3346,7 @@ function App() {
       <AnimatePresence>
         {focusModalOpen && selectedEntry && (
           <AnimeFocusModal
+            onWatch={openWatch}
             entry={selectedEntry}
             group={selectedGroup}
             setSelectedId={setSelectedId}
@@ -3457,423 +3457,6 @@ function AnimeTvIcon() {
       <circle className="anime-tv-dial anime-tv-dial-small" cx="60" cy="45" r="2" />
       <path className="anime-tv-foot" d="M23 63h26" />
     </svg>
-  )
-}
-
-function AnimeChannelPanel({
-  entries,
-  changeProgress,
-  close,
-  onOpenEntry,
-}: {
-  entries: AnimeEntry[]
-  changeProgress: (entry: AnimeEntry, nextProgress: number) => void
-  close: () => void
-  onOpenEntry: (entry: AnimeEntry) => void
-}) {
-  const [tunedEntryId, setTunedEntryId] = useState<string | null>(null)
-  const tunedEntry = useMemo(
-    () => entries.find((entry) => entry.id === tunedEntryId) || null,
-    [entries, tunedEntryId],
-  )
-
-  useEffect(() => {
-    if (!tunedEntryId || entries.some((entry) => entry.id === tunedEntryId)) return
-    setTunedEntryId(null)
-  }, [entries, tunedEntryId])
-
-  return (
-    <motion.div
-      className="anime-channel-backdrop"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) close()
-      }}
-    >
-      <motion.div
-        id="anime-channel-panel"
-        className={tunedEntry ? 'anime-channel-dock anime-channel-dock-tuned' : 'anime-channel-dock'}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Anime channel"
-        initial={{ opacity: 0, x: 18, y: 18, scale: 0.18 }}
-        animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
-        exit={{ opacity: 0, x: 18, y: 18, scale: 0.18 }}
-        transition={{ duration: 0.22, ease: 'easeOut' }}
-        style={{ transformOrigin: 'right bottom' }}
-      >
-        <aside className="anime-channel-panel">
-          <header className="anime-channel-header">
-            <span className="anime-channel-mark">
-              <AnimeTvIcon />
-            </span>
-            <div>
-              <p className="eyebrow">Anime channel</p>
-              <h2>Watching now</h2>
-              <span>{entries.length ? `${entries.length} active signal${entries.length === 1 ? '' : 's'}` : 'No active signal'}</span>
-            </div>
-            <button className="icon-button" type="button" title="Close anime channel" onClick={close}>
-              <X size={18} />
-            </button>
-          </header>
-
-          {entries.length ? (
-            <div className="anime-channel-list">
-              {entries.map((entry, index) => {
-                const totalLabel = entry.episodesTotal ? ` / ${entry.episodesTotal}` : ''
-                const leftOffLabel = entry.progress > 0 ? `Left off Ep ${entry.progress}${totalLabel}` : 'Ready to start'
-                const nextEpisodeLabel = `Next Ep ${Math.max(1, entry.progress + 1)}${totalLabel}`
-                const tuned = tunedEntry?.id === entry.id
-
-                return (
-                  <button
-                    className={tuned ? 'anime-channel-row anime-channel-row-tuned' : 'anime-channel-row'}
-                    key={entry.id}
-                    type="button"
-                    title={`Tune to ${entry.title}`}
-                    onClick={() => setTunedEntryId(entry.id)}
-                  >
-                    <img src={entry.coverImage || artPanels[index % artPanels.length]} alt={`${entry.title} cover`} />
-                    <div className="anime-channel-copy">
-                      <span className="anime-channel-kicker">
-                        <Play size={14} />
-                        <span>CH {String(index + 1).padStart(2, '0')}</span>
-                      </span>
-                      <strong>{entry.title}</strong>
-                      <span className="anime-channel-episode-line">
-                        <b>{leftOffLabel}</b>
-                        <em>{nextEpisodeLabel}</em>
-                      </span>
-                      <ProgressTrack entry={entry} progress={entry.progress} total={entry.episodesTotal} />
-                      <span className="anime-channel-meta">
-                        <span className={statusClass(entry.status)}>{statusMeta[entry.status].short}</span>
-                        <em>{formatShortDate(activityDateFor(entry))}</em>
-                      </span>
-                    </div>
-                    <ChevronRight size={17} />
-                  </button>
-                )
-              })}
-            </div>
-          ) : (
-            <EmptyPanel image={TOAD_SAGE_IMAGE} title="No shows airing" compact />
-          )}
-        </aside>
-
-        <AnimatePresence>
-          {tunedEntry && (
-            <AnimeChannelViewer
-              entry={tunedEntry}
-              channelNumber={entries.findIndex((entry) => entry.id === tunedEntry.id) + 1}
-              nextQueueEntry={entries[(entries.findIndex((entry) => entry.id === tunedEntry.id) + 1) % entries.length]}
-              changeProgress={changeProgress}
-              close={() => setTunedEntryId(null)}
-              tuneEntry={setTunedEntryId}
-              openDetails={() => onOpenEntry(tunedEntry)}
-            />
-          )}
-        </AnimatePresence>
-      </motion.div>
-    </motion.div>
-  )
-}
-
-function AnimeChannelViewer({
-  entry,
-  channelNumber,
-  nextQueueEntry,
-  changeProgress,
-  close,
-  tuneEntry,
-  openDetails,
-}: {
-  entry: AnimeEntry
-  channelNumber: number
-  nextQueueEntry?: AnimeEntry
-  changeProgress: (entry: AnimeEntry, nextProgress: number) => void
-  close: () => void
-  tuneEntry: (id: string) => void
-  openDetails: () => void
-}) {
-  const nextEpisode = Math.max(1, entry.progress + 1)
-  const totalLabel = entry.episodesTotal ? ` / ${entry.episodesTotal}` : ''
-  const leftOffLabel = entry.progress > 0 ? `Left off Episode ${entry.progress}${totalLabel}` : 'Ready to start'
-  const nextEpisodeLabel = `Episode ${nextEpisode}${totalLabel}`
-  const heroImage = entry.bannerImage || entry.coverImage || artPanels[0]
-  const complete = Boolean(entry.episodesTotal && entry.progress >= entry.episodesTotal)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const subtitleInputRef = useRef<HTMLInputElement>(null)
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const objectUrlRef = useRef<string | null>(null)
-  const subtitleObjectUrlRef = useRef<string | null>(null)
-  const autoMarkedRef = useRef(false)
-  const [localMedia, setLocalMedia] = useState<{ url: string; name: string } | null>(null)
-  const [localSubtitle, setLocalSubtitle] = useState<{ url: string; name: string } | null>(null)
-  const [playbackSpeed, setPlaybackSpeed] = useState(1)
-  const [compactPlayer, setCompactPlayer] = useState(false)
-  const officialWatchLinks = officialWatchLinksFor(entry)
-  const nextQueuedEntry = nextQueueEntry?.id === entry.id ? undefined : nextQueueEntry
-
-  const clearLocalMedia = useCallback(() => {
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current)
-      objectUrlRef.current = null
-    }
-    if (subtitleObjectUrlRef.current) {
-      URL.revokeObjectURL(subtitleObjectUrlRef.current)
-      subtitleObjectUrlRef.current = null
-    }
-
-    setLocalMedia(null)
-    setLocalSubtitle(null)
-    if (fileInputRef.current) fileInputRef.current.value = ''
-    if (subtitleInputRef.current) subtitleInputRef.current.value = ''
-  }, [])
-
-  useEffect(() => () => {
-    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
-    if (subtitleObjectUrlRef.current) URL.revokeObjectURL(subtitleObjectUrlRef.current)
-  }, [])
-
-  useEffect(() => {
-    clearLocalMedia()
-    autoMarkedRef.current = false
-  }, [clearLocalMedia, entry.id])
-
-  useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.playbackRate = playbackSpeed
-    }
-  }, [playbackSpeed, localMedia])
-
-  const selectLocalMedia = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-
-    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
-    const url = URL.createObjectURL(file)
-    objectUrlRef.current = url
-    setLocalMedia({ url, name: file.name })
-    autoMarkedRef.current = false
-  }
-
-  const selectLocalSubtitle = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-
-    if (subtitleObjectUrlRef.current) URL.revokeObjectURL(subtitleObjectUrlRef.current)
-    const url = URL.createObjectURL(file)
-    subtitleObjectUrlRef.current = url
-    setLocalSubtitle({ url, name: file.name })
-  }
-
-  const requestPictureInPicture = async () => {
-    if (!videoRef.current || !document.pictureInPictureEnabled) return
-
-    try {
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture()
-      } else {
-        await videoRef.current.requestPictureInPicture()
-      }
-    } catch {
-      // Browsers can reject PiP when the media has not started; keep this quiet.
-    }
-  }
-
-  const handlePlaybackProgress = () => {
-    const video = videoRef.current
-    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return
-    if (autoMarkedRef.current || complete) return
-
-    if (video.currentTime / video.duration >= 0.9) {
-      autoMarkedRef.current = true
-      changeProgress(entry, entry.progress + 1)
-    }
-  }
-
-  return (
-    <motion.section
-      className={compactPlayer ? 'anime-channel-viewer anime-channel-viewer-compact' : 'anime-channel-viewer'}
-      initial={{ opacity: 0, x: -34, scale: 0.94 }}
-      animate={{ opacity: 1, x: 0, scale: 1 }}
-      exit={{ opacity: 0, x: -24, scale: 0.96 }}
-      transition={{ duration: 0.2, ease: 'easeOut' }}
-      style={{ '--viewer-art': `url(${heroImage})`, transformOrigin: 'left bottom' } as CSSProperties}
-    >
-      <header className="anime-channel-viewer-header">
-        <div>
-          <p className="eyebrow">GPTNime broadcast</p>
-          <h2>{entry.title}</h2>
-        </div>
-        <button className="icon-button" type="button" title={compactPlayer ? 'Expand player' : 'Compact mini-player'} onClick={() => setCompactPlayer((current) => !current)}>
-          {compactPlayer ? <Maximize2 size={18} /> : <Minus size={18} />}
-        </button>
-        <button className="icon-button" type="button" title="Close viewer" onClick={close}>
-          <X size={18} />
-        </button>
-      </header>
-
-      <div
-        className={localMedia ? 'anime-channel-screen anime-channel-screen-player' : 'anime-channel-screen'}
-        aria-label={`${entry.title} viewer`}
-      >
-        {localMedia && (
-          <video
-            ref={videoRef}
-            className="anime-channel-video"
-            src={localMedia.url}
-            controls
-            playsInline
-            poster={heroImage}
-            onTimeUpdate={handlePlaybackProgress}
-          >
-            {localSubtitle && <track src={localSubtitle.url} kind="subtitles" srcLang="en" label={localSubtitle.name} default />}
-          </video>
-        )}
-        <div className="anime-channel-screen-overlay">
-          <span className="anime-channel-live-pill">
-            <Play size={13} />
-            CH {String(Math.max(1, channelNumber)).padStart(2, '0')}
-          </span>
-          <span className={statusClass(entry.status)}>{statusMeta[entry.status].short}</span>
-        </div>
-        <div className="anime-channel-screen-copy">
-          <span>{nextEpisodeLabel}</span>
-          <strong>{entry.title}</strong>
-          <em>{leftOffLabel}</em>
-        </div>
-        <div className="anime-channel-signal-bars" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-          <span />
-          <span />
-        </div>
-      </div>
-
-      <div className="anime-channel-viewer-body">
-        <div className="anime-channel-source-panel">
-          <div>
-            <p className="eyebrow">Episode source</p>
-            <strong>{localMedia ? localMedia.name : 'Choose a local episode file'}</strong>
-            <span>{localMedia ? 'Playing from this browser session.' : 'Use a file or provider you have legal access to.'}</span>
-          </div>
-          <div className="anime-channel-source-actions">
-            <button className="icon-text-button" type="button" onClick={() => fileInputRef.current?.click()}>
-              <Upload size={16} />
-              <span>{localMedia ? 'Replace file' : 'Choose file'}</span>
-            </button>
-            {localMedia && (
-              <button className="icon-button" type="button" title="Clear selected file" onClick={clearLocalMedia}>
-                <X size={16} />
-              </button>
-            )}
-          </div>
-          <input
-            ref={fileInputRef}
-            className="hidden-file"
-            type="file"
-            accept="video/*,.mkv,.webm,.mp4,.m4v,.mov"
-            onChange={selectLocalMedia}
-          />
-          <input
-            ref={subtitleInputRef}
-            className="hidden-file"
-            type="file"
-            accept=".vtt,text/vtt"
-            onChange={selectLocalSubtitle}
-          />
-          {officialWatchLinks.length ? (
-            <div className="anime-channel-source-links">
-              {officialWatchLinks.map((link) => (
-                <a href={link.url} target="_blank" rel="noreferrer" key={link.url}>
-                  <Link size={14} />
-                  <span>{link.site}</span>
-                </a>
-              ))}
-            </div>
-          ) : (
-            <p className="anime-channel-source-note">No official streaming providers were found in this title's metadata.</p>
-          )}
-        </div>
-
-        <div className="anime-channel-playback-tools">
-          <button className="mini-button" type="button" onClick={() => subtitleInputRef.current?.click()}>
-            <Upload size={14} />
-            <span>{localSubtitle ? localSubtitle.name : 'Add VTT subtitles'}</span>
-          </button>
-          <label className="playback-speed-control">
-            <span>Speed</span>
-            <select value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))}>
-              {[0.75, 1, 1.25, 1.5, 2].map((speed) => (
-                <option key={speed} value={speed}>
-                  {speed}x
-                </option>
-              ))}
-            </select>
-          </label>
-          <button className="mini-button" type="button" onClick={() => void requestPictureInPicture()} disabled={!localMedia}>
-            <Maximize2 size={14} />
-            <span>PiP</span>
-          </button>
-          <span className="auto-watch-note">Local playback marks watched at 90%.</span>
-        </div>
-
-        <div className="anime-channel-viewer-progress">
-          <span>
-            <b>{leftOffLabel}</b>
-            <em>{nextEpisodeLabel} queued</em>
-          </span>
-          <ProgressTrack entry={entry} progress={entry.progress} total={entry.episodesTotal} />
-        </div>
-
-        <div className="anime-channel-viewer-facts">
-          <span>
-            <b>{entry.format || 'TV'}</b>
-            <em>Format</em>
-          </span>
-          <span>
-            <b>{formatShortDate(activityDateFor(entry))}</b>
-            <em>Last signal</em>
-          </span>
-          <span>
-            <b>{entry.episodesTotal ? `${entry.progress}/${entry.episodesTotal}` : entry.progress.toString()}</b>
-            <em>Progress</em>
-          </span>
-        </div>
-
-        <div className="anime-channel-viewer-actions">
-          <button
-            className="icon-text-button strong"
-            type="button"
-            onClick={() => changeProgress(entry, entry.progress + 1)}
-            disabled={complete}
-          >
-            <Check size={16} />
-            <span>{complete ? 'Season complete' : 'Mark episode watched'}</span>
-          </button>
-          <button className="icon-text-button" type="button" onClick={openDetails}>
-            <Maximize2 size={16} />
-            <span>Open details</span>
-          </button>
-        </div>
-
-        {nextQueuedEntry && (
-          <button className="anime-channel-next-queue" type="button" onClick={() => tuneEntry(nextQueuedEntry.id)}>
-            <img src={nextQueuedEntry.coverImage || artPanels[2]} alt="" />
-            <span>
-              <b>Next signal</b>
-              <strong>{nextQueuedEntry.title}</strong>
-              <em>{nextEpisodeLabelFor(nextQueuedEntry)}</em>
-            </span>
-            <ChevronRight size={16} />
-          </button>
-        )}
-      </div>
-    </motion.section>
   )
 }
 
@@ -4187,6 +3770,7 @@ function Dashboard({
   lateNight,
   setView,
   setSelectedId,
+  onWatch,
   changeProgress,
   addFromSearch,
 }: {
@@ -4212,6 +3796,7 @@ function Dashboard({
   lateNight: boolean
   setView: (view: ViewName) => void
   setSelectedId: (id: string) => void
+  onWatch: (entry: AnimeEntry, episode?: number) => void
   changeProgress: (entry: AnimeEntry, nextProgress: number) => void
   addFromSearch: (result: SearchResult, status?: WatchStatus, rewatchStatus?: RewatchStatus) => void
 }) {
@@ -4298,6 +3883,8 @@ function Dashboard({
                       {entry.favorite && <span className="priority-chip">Favorite</span>}
                     </div>
                   </div>
+                  <div className="active-watch-actions">
+                  <button className="icon-button" type="button" aria-label={`Watch ${entry.title}`} title={`Watch ${entry.title}`} onClick={() => onWatch(entry)}><Play size={18} /></button>
                   <button
                     className="icon-button"
                     type="button"
@@ -4306,6 +3893,7 @@ function Dashboard({
                   >
                     <Plus size={18} />
                   </button>
+                  </div>
                 </article>
 	              ))}
 	            </div>
@@ -5131,6 +4719,7 @@ function AnimeFocusModal({
   entry,
   group,
   setSelectedId,
+  onWatch,
   changeProgress,
   undoProgress,
   lastProgressChange,
@@ -5149,6 +4738,7 @@ function AnimeFocusModal({
   entry: AnimeEntry
   group: LibraryGroup | null
   setSelectedId: (id: string) => void
+  onWatch: (entry: AnimeEntry, episode?: number) => void
   changeProgress: (entry: AnimeEntry, nextProgress: number) => void
   undoProgress: (entry: AnimeEntry) => void
   lastProgressChange: ProgressUndoSnapshot | null
@@ -5207,6 +4797,7 @@ function AnimeFocusModal({
       >
         <header className="focus-modal-hero" style={{ '--focus-hero': `url(${heroImage})` } as CSSProperties}>
           <div className="focus-modal-actions">
+            <button className="icon-text-button strong" type="button" onClick={() => onWatch(entry)}><Play size={16} /><span>{entry.format === 'MOVIE' ? 'Watch movie' : 'Watch'}</span></button>
             <button
               className="icon-button"
               type="button"
@@ -5370,7 +4961,7 @@ function AnimeFocusModal({
                       className={watched ? 'episode-row episode-row-watched' : 'episode-row'}
                       key={episode.number}
                       type="button"
-                      onClick={() => changeProgress(entry, episode.number)}
+                      onClick={() => onWatch(entry, episode.number)}
                     >
                       <span className="episode-number">{episode.number}</span>
                       <span className="episode-copy">
@@ -5381,7 +4972,7 @@ function AnimeFocusModal({
                             .join(' - ')}
                         </em>
                       </span>
-                      <span className="episode-state">{watched ? 'Watched' : 'Mark'}</span>
+                      <span className="episode-state">{watched ? 'Watch again' : 'Watch'}</span>
                     </button>
                   )
                 })}
@@ -5510,6 +5101,7 @@ function LibraryView({
   sortMode,
   setSortMode,
   setSelectedId,
+  onWatch,
   changeProgress,
   undoProgress,
   lastProgressChange,
@@ -5542,6 +5134,7 @@ function LibraryView({
   sortMode: SortMode
   setSortMode: (value: SortMode) => void
   setSelectedId: (id: string) => void
+  onWatch: (entry: AnimeEntry, episode?: number) => void
   changeProgress: (entry: AnimeEntry, nextProgress: number) => void
   undoProgress: (entry: AnimeEntry) => void
   lastProgressChange: ProgressUndoSnapshot | null
@@ -5624,6 +5217,7 @@ function LibraryView({
               selected={selectedGroup?.id === group.id}
               setSelectedId={setSelectedId}
               changeProgress={changeProgress}
+              onWatch={onWatch}
             />
           ))}
           {!entries.length && (
@@ -5677,6 +5271,8 @@ function LibraryView({
                     </button>
                   </div>
                 </div>
+
+                <button className="icon-text-button strong detail-watch-button" type="button" onClick={() => onWatch(selectedEntry)}><Play size={17} /><span>{selectedEntry.format === 'MOVIE' ? 'Watch movie' : 'Open in cinema'}</span></button>
 
                 {selectedGroup && selectedGroup.entries.length > 1 && (
                   <section className="season-switcher" aria-label={`${selectedGroup.title} seasons in library`}>
@@ -5875,7 +5471,7 @@ function LibraryView({
                             className={watched ? 'episode-row episode-row-watched' : 'episode-row'}
                             key={episode.number}
                             type="button"
-                            onClick={() => changeProgress(selectedEntry, episode.number)}
+                            onClick={() => onWatch(selectedEntry, episode.number)}
                           >
                             <span className="episode-number">{episode.number}</span>
                             <span className="episode-copy">
@@ -5886,7 +5482,7 @@ function LibraryView({
                                   .join(' - ')}
                               </em>
                             </span>
-                            <span className="episode-state">{watched ? 'Watched' : 'Mark'}</span>
+                            <span className="episode-state">{watched ? 'Watch again' : 'Watch'}</span>
                           </button>
                         )
                       })}
@@ -6071,11 +5667,13 @@ function AnimeCard({
   group,
   selected,
   setSelectedId,
+  onWatch,
   changeProgress,
 }: {
   group: LibraryGroup
   selected: boolean
   setSelectedId: (id: string) => void
+  onWatch: (entry: AnimeEntry, episode?: number) => void
   changeProgress: (entry: AnimeEntry, nextProgress: number) => void
 }) {
   const StatusIcon = statusMeta[group.status].icon
@@ -6130,6 +5728,7 @@ function AnimeCard({
           total={group.episodesTotal}
         />
         <div className="card-actions">
+          <button className="card-watch-button" type="button" aria-label={`Watch ${group.active.title}`} onClick={() => onWatch(group.active)}><Play size={13} /><span>Watch</span></button>
           <button
             className="mini-icon-button"
             type="button"

@@ -13,7 +13,9 @@ GPTNime is a local-first anime watch ledger for tracking what you are watching, 
 - `Recommended for you` shelf seeded by ratings, favorites, rewatches, and completed titles while excluding already tracked anime.
 - Anime-fan stats: completion rate, month heatmap, top genres/studios, average score by genre, movie/series mix, episodes watched this month, longest pause, and rewatch count.
 - Notification drawer with stale threshold, snooze, dismiss, mute title, watching-only, and high-priority-only controls.
-- Anime-channel view with local video file playback, VTT subtitles, playback speed, Picture-in-Picture, mini-player mode, next-episode queue, and 90% auto mark-watched.
+- GPTNime Cinema with Watch actions on cards, details, episode lists, and Continue Watching; a full-library lineup, movie support, docked playback, and pop-out / pop-in windows.
+- Local video files and direct MP4 / WebM URLs, VTT subtitles, playback speed, per-source resume points, and progress marking after 90% actual playback.
+- WCO catalogue search and saved title/episode pages in a provider-owned window. WCO blocks embedding from localhost; its streams are not proxied or extracted into the cinema. See [`docs/CINEMA.md`](docs/CINEMA.md).
 - Subtle easter eggs and ambient touches documented in [`docs/EASTER_EGGS.md`](docs/EASTER_EGGS.md).
 - Project-level UI conventions documented in [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md).
 - Local launcher setup documented in [`docs/LOCAL_LAUNCHER.md`](docs/LOCAL_LAUNCHER.md).
@@ -49,7 +51,10 @@ To install the searchable local launcher:
 ```bash
 npm run build
 npm run lint
+npm run test:cinema
 ```
+
+Browser checks use installed Chrome (`/usr/bin/google-chrome`; override with `CHROME_PATH`). Run `CINEMA_HEADED=1 npm run test:cinema` on a desktop to also test native Document Picture-in-Picture. Tests start an isolated Vite server on port 5197, use fixture library data, and save screenshots under `output/cinema/`.
 
 ## Data Storage
 
@@ -60,6 +65,7 @@ GPTNime is local-first. No app backend is required.
 - Notification preferences are stored in browser `localStorage` under `gptnime-notification-prefs-v1`.
 - Sage mode is stored under `gptnime-sage-mode-v1`.
 - Focus layout preference is stored under `gptnime-focus-layout-v1`.
+- Cinema preferences, WCO page links, and up to 200 resume points are stored under `gptnime-cinema-v1`. Video URLs and file contents are never persisted. Cinema settings are separate from the library JSON export/import.
 - Use the download and upload buttons in the top bar to export/import JSON backups.
 
 ## Project Structure
@@ -70,6 +76,7 @@ src/
   App.css        Application styling and responsive layouts.
   main.tsx       React entry point.
   index.css      Global base styles.
+  watch/         Cinema UI, window lifecycle, provider routes, and resume storage.
 public/
   art/           App artwork used by the dashboard, library, and channel surfaces.
   brand/         Generated launcher icon and logo lockup assets.
@@ -78,6 +85,10 @@ docs/
   DESIGN_NOTES.md Project-level UI conventions.
   LOCAL_LAUNCHER.md Desktop launcher setup and asset notes.
   WORKFLOW.md     Commit and GitHub push expectations.
+  CINEMA.md       Watch flow, WCO limitations, artwork provenance, and browser checks.
+tests/
+  cinema.browser.mjs  Real-media browser regression checks.
+  fixtures/      Generated, silent video test pattern.
 ```
 
 ## External APIs

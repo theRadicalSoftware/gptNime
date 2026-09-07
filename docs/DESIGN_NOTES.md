@@ -20,3 +20,11 @@ These notes capture project-level UI decisions that should remain consistent acr
 - The GPTNime app icon is a generated retro anime-channel TV mark with a gold frame, teal screen glow, red control accent, and small sparkle.
 - Keep icon variants text-free and readable at 16px, 32px, and launcher sizes. Avoid character art, readable anime titles, or dense background detail.
 - Browser and installable app metadata should use the PNG/ICO stack in `public/` plus `public/site.webmanifest`; do not reintroduce a generic Vite SVG favicon.
+
+## Cinema
+
+- Use `public/art/cinema-rooftop.png` for the unoccupied screen and empty state, with a thin champagne frame. The video surface itself stays black with unobstructed native controls and correct aspect ratio.
+- Keep source behavior explicit: WCO says “Provider window”; files and video URLs say “Play in cinema.” The external service's actual availability must never be presented as verified inline playback.
+- The large cinema, dock, and pop-out share one mounted player. Adopt the portal host into the new document and restore time, paused/playing state, and speed after media reloads.
+- Escape docks the cinema. The dock releases the surrounding app for browsing. The modal traps focus and makes the app behind it inert; closing restores interaction and focus.
+- See `CINEMA.md` for the generation prompt, provenance, provider boundaries, and test commands.
