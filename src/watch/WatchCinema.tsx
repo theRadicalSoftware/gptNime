@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Link2, Maximize2, Minimize2, MonitorUp, Play, RotateCcw, Search, Subtitles, X } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Link2, LoaderCircle, Maximize2, Minimize2, MonitorUp, Play, RotateCcw, Search, Subtitles, X } from 'lucide-react'
 import type { Language, WatchRequest, WatchTitle } from './watchState'
 import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, readWatchState, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
 import './WatchCinema.css'
@@ -437,6 +437,13 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     if (providerAvailable && intent > 0) autoPrepare.current()
   }, [providerAvailable, intent])
 
+  const chooseVersion = (language: Language) => {
+    if (tab !== 'wco') chooseTab('wco')
+    if (language === settings.language) return
+    updateSettings({ language })
+    if (providerAvailable && (intent > 0 || source || preparing || matches.length)) void prepareEpisode({ language })
+  }
+
   const applyPage = (value: string, language?: Language) => {
     const url = wcoPage(value)
     if (!url) { setError('Use a WCO episode or series page beginning with https://.'); return }
@@ -540,6 +547,15 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
         {movie ? <span className="cinema-feature"><Film size={16} /> Feature film</span> : <label>Episode <input aria-label="Cinema episode number" type="number" min="1" max={entry.episodesTotal || undefined} key={episode} defaultValue={episode} onBlur={(event) => { const value = Number(event.currentTarget.value); if (Number.isInteger(value) && value >= 1 && (!entry.episodesTotal || value <= entry.episodesTotal)) { if (value !== episode) onEpisode(value) } else event.currentTarget.value = String(episode) }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /><span>{entry.episodesTotal ? `of ${entry.episodesTotal}` : ''}</span></label>}
         <button className="cinema-icon" aria-label="Next episode in cinema" disabled={!nextAvailable} onClick={() => onEpisode(episode + 1)}><ChevronRight size={18} /></button>
       </div>
+      {(tab === 'wco' || source?.provider === 'wco') && <div className="cinema-version">
+        <span className="cinema-version-label">Version</span>
+        <div className="cinema-language" role="group" aria-label="Episode version" aria-busy={preparing}>
+          {(['sub', 'dub'] as Language[]).map((language) => <button key={language} type="button" aria-label={language === 'sub' ? 'Subbed' : 'Dubbed'} aria-pressed={settings.language === language} className={settings.language === language ? 'is-active' : ''} title={language === 'sub' ? 'Original audio with English subtitles' : 'English dubbed audio'} onClick={() => chooseVersion(language)}>
+            {preparing && settings.language === language && <LoaderCircle className="cinema-version-spinner" size={12} aria-hidden="true" />}
+            {language === 'sub' ? 'Sub' : 'Dub'}
+          </button>)}
+        </div>
+      </div>}
       <button className="cinema-button cinema-mark" disabled={watched} onClick={() => { markedRef.current = true; onComplete(entry.id, episode) }}><Check size={16} />{watched ? 'Watched' : episode > entry.progress + 1 ? `Mark through ep ${episode}` : movie ? 'Mark movie watched' : 'Mark watched'}</button>
       <button className="cinema-icon cinema-details-link" aria-label="Open title details" title="Title details" onClick={onDetails}><ExternalLink size={16} /></button>
     </div>
@@ -552,11 +568,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
         <button className={tab === 'url' ? 'is-active' : ''} aria-pressed={tab === 'url'} onClick={() => chooseTab('url')}><Link2 size={18} /><span>Video URL<small>Play in cinema</small></span></button>
       </div>
       {tab === 'wco' && <div className="cinema-provider-panel">
-        <div className="cinema-provider-description"><p>{providerAvailable ? 'Pick an episode. We’ll find it and start your cinema.' : 'Find the show on WCO, then save its page for next time.'}</p><div className="cinema-language" role="group" aria-label="WCO language">{(['sub', 'dub'] as Language[]).map((language) => <button key={language} aria-pressed={settings.language === language} className={settings.language === language ? 'is-active' : ''} onClick={() => {
-          if (language === settings.language) return
-          updateSettings({ language })
-          if (providerAvailable && (intent > 0 || source || preparing || matches.length)) void prepareEpisode({ language })
-        }}>{language === 'sub' ? 'Subbed' : 'Dubbed'}</button>)}</div></div>
+        <div className="cinema-provider-description"><p>{providerAvailable ? 'Pick an episode. We’ll find it and start your cinema.' : 'Find the show on WCO, then save its page for next time.'}</p></div>
         {providerAvailable && <>
           <div className="cinema-auto-actions">
             {preparing ? <button className="cinema-button" type="button" onClick={(event) => { event.preventDefault(); cancelPreparation() }}><X size={16} />Cancel</button> : <button className="cinema-button primary" onClick={() => void prepareEpisode()}><Play size={16} />{source ? 'Reload episode' : error ? 'Retry playback' : movie ? 'Play movie' : `Play episode ${episode}`}</button>}

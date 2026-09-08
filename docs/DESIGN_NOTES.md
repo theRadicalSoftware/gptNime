@@ -26,5 +26,6 @@ These notes capture project-level UI decisions that should remain consistent acr
 - Use `public/art/cinema-rooftop.png` for the unoccupied screen and empty state, with a thin champagne frame. The video surface itself stays black with unobstructed native controls and correct aspect ratio.
 - Keep source behavior explicit: WCO says “Provider window”; files and video URLs say “Play in cinema.” The external service's actual availability must never be presented as verified inline playback.
 - The large cinema, dock, and pop-out share one mounted player. Adopt the portal host into the new document and restore time, paused/playing state, and speed after media reloads.
+- Keep the compact **Version · Sub / Dub** switch beside the episode controls below the video, with a restrained gold active state. Keep it accessible in dock and pop-out layouts; use a separate control row on small screens. Version selection belongs with playback rather than below source setup.
 - Escape docks the cinema. The dock releases the surrounding app for browsing. The modal traps focus and makes the app behind it inert; closing restores interaction and focus.
 - See `CINEMA.md` for the generation prompt, provenance, provider boundaries, and test commands.

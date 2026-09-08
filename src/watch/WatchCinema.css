@@ -45,7 +45,7 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-now-playing em { display: inline-flex; align-items: center; gap: 4px; color: #82bfb5; font-size: 9px; font-style: normal; }
 .cinema-now-playing small { font-size: 10px; color: var(--cinema-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .cinema-time { font-size: 8px; letter-spacing: .12em; color: #949b9e; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.cinema-controls { display: flex; gap: 10px; align-items: center; padding: 14px 0; }
+.cinema-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 14px 0; }
 .cinema-episode-navigation { display: flex; gap: 5px; align-items: center; margin-right: auto; }
 .cinema-episode-navigation label { display: flex; align-items: center; gap: 7px; color: #ccc5b9; font-size: 11px; }
 .cinema-episode-navigation input { width: 67px; padding: 7px 6px; text-align: center; font-variant-numeric: tabular-nums; }
@@ -64,9 +64,15 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-provider-panel, .cinema-url-panel { padding-top: 17px; }
 .cinema-provider-description { display: flex; gap: 10px; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .cinema-provider-description p { color: #b3b4b3; font-size: 11px; line-height: 1.6; }
-.cinema-language { display: flex; padding: 3px; background: #080b0d; border: 1px solid #ffffff15; border-radius: 7px; }
-.cinema-language button { font-size: 9px; color: #aaa; border: 0; background: transparent; padding: 6px 9px; border-radius: 4px; }
-.cinema-language button.is-active { color: var(--cinema-gold); background: #e5c17c15; }
+.cinema-version { display: flex; flex-shrink: 0; align-items: center; gap: 10px; margin-right: 8px; }
+.cinema-version-label { color: #969d9d; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }
+.cinema-language { display: flex; padding: 3px; background: #080b0d80; border: 1px solid #ffffff15; border-radius: 8px; }
+.cinema-language button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; width: 62px; min-height: 32px; font-size: 11px; color: #aeb4b5; border: 1px solid transparent; background: transparent; padding: 6px 8px; border-radius: 5px; transition: color .15s, background .15s, border-color .15s; }
+.cinema-language button:hover { color: #e8dcc4; background: #ffffff05; }
+.cinema-language button.is-active { color: var(--cinema-gold); background: #e5c17c12; border-color: #e5c17c24; }
+.cinema-version-spinner { flex-shrink: 0; animation: cinema-version-spin 1s linear infinite; }
+@keyframes cinema-version-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .cinema-version-spinner { animation: none; } }
 .cinema-search-form { display: flex; gap: 7px; }
 .cinema-search-form > input { flex: 1; width: 100%; font-size: 11px; }
 .cinema-search-form select { max-width: 135px; font-size: 10px; padding: 8px; }
@@ -145,6 +151,7 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-layout-dock .cinema-screen h3 { font-size: 20px; margin-bottom: 0; }
 .cinema-layout-dock .cinema-start { margin-top: 15px; padding: 10px; }
 .cinema-layout-dock .cinema-controls { gap: 3px; padding: 8px 0 0; }
+.cinema-layout-dock .cinema-version { order: 3; flex-basis: 100%; justify-content: space-between; margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #ffffff0e; }
 .cinema-layout-dock .cinema-episode-navigation { gap: 0; }
 .cinema-layout-dock .cinema-episode-navigation label { font-size: 10px; gap: 4px; }
 .cinema-layout-dock .cinema-episode-navigation input { width: 53px; }
@@ -196,6 +203,8 @@ body.cinema-modal-open { overflow: hidden !important; }
   .cinema-now-playing { padding: 12px 0; }
   .cinema-time { font-size: 7px; letter-spacing: .04em; }
   .cinema-controls { gap: 5px; }
+  .cinema-version { order: 3; flex-basis: 100%; justify-content: space-between; margin: 8px 0 0; padding-top: 10px; border-top: 1px solid #ffffff0e; }
+  .cinema-language button { min-height: 36px; width: 68px; }
   .cinema-episode-navigation { gap: 0; }
   .cinema-episode-navigation label { font-size: 10px; gap: 3px; }
   .cinema-episode-navigation input { width: 55px; }
