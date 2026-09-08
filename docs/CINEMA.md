@@ -8,7 +8,7 @@ Open the floating TV or use **Watch** on a library card, Continue Watching row, 
 
 The lineup includes the whole library, with active watching titles first. Completed titles remain available for replay. Movies use one feature-film slot. For a fresh rewatch tally, start the existing Rewatch action in title details; opening a completed title does not reset its history.
 
-- **WCO** searches for the selected episode or whole series. Language selects subbed/dubbed search terms and saved-link scope. Paste an exact title or episode page to save it for later.
+- **WCO** plays in the cinema when the local connector is available. Choose the episode and language, paste a `wco.tv` episode or series link, and press **Play here**. A temporary Chrome window follows WCO's normal preparation flow and closes when the video is ready. Complete any human verification there; press the video's Play control to start watching in the cinema. Exact episode links, series links and verified neighboring episode links are saved for reuse. Search/browse buttons still open WCO to find a title.
 - **Your files** loads a browser-supported local video without uploading it. MP4 and WebM are the usual choices; support for other containers/codecs depends on the browser.
 - **Video URL** accepts direct HTTPS video sources or HTTP loopback sources. It uses native browser decoding, not a website embed. MP4/WebM are supported where their codecs are available. There is no HLS/DASH compatibility library in this change.
 - Subtitles accept WebVTT. Playback speed ranges from 0.75× to 2×. Native video controls provide volume, seeking, fullscreen and browser-supported video PiP.
@@ -17,7 +17,7 @@ The lineup includes the whole library, with active watching titles first. Comple
 
 ## Progress and resume
 
-The selected episode is independent of ledger progress. Marking watched never silently switches the current source to another episode. Next/Previous/selecting another title unloads the previous source and subtitles. The next file or URL must be chosen explicitly.
+The selected episode is independent of ledger progress. Marking watched never silently switches the current source to another episode. Next/Previous/selecting another title unloads the previous source and subtitles. Choose the next file/URL explicitly, or press **Play here** to prepare WCO from its saved episode/series link.
 
 Automatic marking is enabled by default and applies only to the next unwatched episode (`selectedEpisode === progress + 1`). It unions the browser's played ranges, including across window transfers, and requires 90% coverage. Seeking forward and replaying the same section cannot inflate coverage. Later episodes can be marked manually with the explicit **Mark through ep N** label. Replay does not decrease progress or duplicate a completed episode's history. Completion inside cinema avoids spawning the ledger's separate end-card modal.
 
@@ -26,6 +26,14 @@ Resume points are scoped by AniList ID, selected episode and source fingerprint.
 Storage key: `gptnime-cinema-v1`. It contains source-tab preference, language, auto-mark preference, saved WCO pages and resume points. Raw media URLs, signed resolver tokens, video files and subtitles are not persisted. Cinema settings are not part of the ledger's existing JSON export/import. They remain separate so this addition does not alter the library schema or existing backups.
 
 ## WCO integration boundary
+
+The local Vite dev/preview server now provides `GET /api/wco/status` and `POST /api/wco/resolve`. The resolver accepts a validated `wco.tv` page, episode, language and movie flag. It uses a temporary headed Playwright/Chrome session to follow normal navigation and enabled announcement/play controls. A movie requires its exact movie page. Wrong episode/language selections and ambiguous series matches produce an error. The series selector reads only `#episodeList`; neighboring links come only from `.prev-next`, excluding unrelated recent-release sidebars.
+
+The API is restricted to loopback clients and loopback Host headers. POST also requires a matching local Origin and JSON content type. It permits one preparation at a time, bounds request size and preparation time, and closes its browser on completion, cancellation or server shutdown. It does not import a user's browser profile, solve human checks, fetch arbitrary URLs, proxy media, or expose raw Playwright errors. Only the final media URL is returned to client memory; playback goes directly from the browser to WCO's CDN. Configure `CHROME_PATH` if Chrome is not at `/usr/bin/google-chrome`.
+
+`index.html` and cinema pop-out documents use `no-referrer`. A cache-disabled live comparison showed the same MP4 failing with the localhost referrer and decoding with no referrer. This is a standard browser privacy policy; no provider Origin/Referer is impersonated and no browser security feature is disabled. WCO resume uses the stable episode-page fingerprint so preparing a fresh source can retain the timestamp. See [the verified playback investigation](WCO-PLAYBACK.md).
+
+This connector is for the local app and requires a desktop display and installed Chrome. A static deployment has no preparation API and falls back to provider-window navigation. Movies and other provider-gated content remain subject to WCO's access requirements; live verification covered Cowboy Bebop episodes 25 and 26, not the entire catalogue.
 
 The earlier DevTools investigation observed these public navigation routes:
 
@@ -39,9 +47,9 @@ The earlier DevTools investigation observed these public navigation routes:
 
 The app submits WCO's normal search form in a top-level provider window. It severs `window.opener` before external navigation. Saved URLs require HTTPS on a known WCO catalogue hostname and reject credential-bearing URLs, media resolver URLs, embedded player paths and transient player parameters. It does not manufacture episode slugs from AniList titles: numbering, seasons, specials and provider titles can differ. Search text and scope are editable for this reason. Opening a provider pauses any video currently playing inside gptNime.
 
-WCO's observed embedded player uses `frame-ancestors` permitting its own sites, excluding `127.0.0.1` and `localhost`. The catalogue page also has frame-busting behavior. This prevents a supported inline WCO iframe inside gptNime. Its normal provider flow includes announcements/verification, and sampled movie pages had a premium gate. **Cowboy Bebop episode 25 was subsequently verified playing on WCO, but both of its tested video routes failed from gptNime.** See the [September 7 playback investigation](WCO-PLAYBACK.md) for the observed routes, HTTP responses and screenshots. No proxy, CSP stripping, ad verification spoofing, login bypass, or extraction service was added. WCO remains responsible for its own sign-in, availability and playback. Its window does not expose trustworthy progress events to gptNime, so progress there is manual.
+WCO's observed embedded player uses `frame-ancestors` permitting its own sites, excluding `127.0.0.1` and `localhost`. The catalogue page also has frame-busting behavior. The app therefore uses native video delivery after normal preparation, rather than a WCO iframe. The earlier direct-source failures were resolved with the browser's no-referrer policy. No media proxy, CSP stripping, ad verification spoofing or login bypass was added. Video played in the cinema uses its normal progress tracking; watching in an external provider window still requires manual progress marking.
 
-The iframe restriction does **not** establish that every direct media response from WCO's CDN is unusable. The Video URL field initially rejected `wcostream.com` and all its subdomains; that blanket check was removed after review. It now allows direct HTTPS CDN URLs to be attempted normally, while continuing to reject known WCO catalogue pages. It does not change request headers, remove response policies, supply credentials, or make an expired/gated stream usable. A valid provider-issued source must still be tested from the app's origin. The regression test intercepts a CDN-shaped URL with a generated video fixture and proves only that our own validator and player accept such a media URL, not that the live provider supports it.
+The iframe restriction does **not** establish that every direct media response from WCO's CDN is unusable. The Video URL field initially rejected `wcostream.com` and all its subdomains; that blanket check was removed after review. It allows direct HTTPS CDN URLs while continuing to reject known WCO catalogue pages. The document's no-referrer policy now applies to media requests. No response policies are removed, and no provider credentials are supplied to the cinema. Automated tests use fixtures to verify validation, absent referrer headers and pop-out behavior; the separate live trace verifies actual provider playback.
 
 Primary references: [WCO episode page](https://www.wco.tv/one-piece-episode-1177-english-subbed), [movie catalogue](https://www.wco.tv/movie-list), [provider status](https://www.wcostatus.com/), [MDN frame-ancestors](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/frame-ancestors). The local detailed trace is in ignored `output/research/wco-2026-09-07/README.md`; transient player credentials are not committed.
 
@@ -65,6 +73,7 @@ npm run build
 npm run lint
 npm run test:cinema
 CINEMA_HEADED=1 npm run test:cinema
+npm run test:wco
 ```
 
 The browser suite starts Vite on `127.0.0.1:5197` and uses an isolated Playwright context with fixture data. Override `CHROME_PATH` for another installed Chromium binary, or `CINEMA_URL` to test an already running server. Headed testing requires a desktop display and a browser with Document PiP.

@@ -33,6 +33,7 @@ try {
   }
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: process.env.CINEMA_HEADED !== '1', args: ['--mute-audio'] })
   const context = await browser.newContext({ viewport: { width: 1440, height: 1080 }, storageState: storage() })
+  await context.route('**/api/wco/status', (route) => route.fulfill({ json: { available: false } }))
   await context.route('https://graphql.anilist.co/**', (route) => route.fulfill({ json: { data: { Media: { recommendations: { nodes: [] } } } } }))
   const providerRequests = []
   await context.route('https://www.wco.tv/**', async (route) => {
@@ -165,13 +166,46 @@ try {
   // A provider's iframe policy is not a blanket ban on that provider's media host.
   // This is a routing fixture, not evidence of successful live WCO playback.
   const providerMediaUrl = 'https://u44.wcostream.com/getvid?evid=cinema-test-fixture'
-  await context.route(providerMediaUrl, (route) => route.fulfill({ contentType: 'video/webm', body: bytes }))
+  const mediaReferrers = []
+  await context.route(providerMediaUrl, async (route) => {
+    const referer = (await route.request().allHeaders()).referer
+    mediaReferrers.push(referer)
+    await route.fulfill(referer
+      ? { status: 404, contentType: 'text/html', body: 'Referrer-sensitive media fixture' }
+      : { contentType: 'video/webm', body: bytes })
+  })
   await page.getByLabel('Direct video URL', { exact: true }).fill(providerMediaUrl)
   await page.getByRole('button', { name: 'Load video', exact: true }).click()
   await page.waitForFunction(() => document.querySelector('video')?.readyState >= 2)
   assert.equal(await page.locator('video').getAttribute('src'), providerMediaUrl)
+  assert.ok(mediaReferrers.length > 0)
+  assert.ok(mediaReferrers.every((referer) => referer === undefined))
+  // Use real HTTP delivery across documents. Chromium can leave a media load
+  // pending when an element backed by a fulfilled DevTools response is adopted.
+  const popupMediaUrl = `${base}/tests/fixtures/cinema-test.webm`
+  const popupReferrers = []
+  await context.unrouteAll({ behavior: 'wait' })
+  context.on('request', (request) => {
+    if (request.url() === popupMediaUrl) popupReferrers.push(request.headers().referer || null)
+  })
+  await page.getByLabel('Direct video URL', { exact: true }).fill(popupMediaUrl)
+  await page.getByRole('button', { name: 'Load video', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('video')?.readyState >= 2)
+  const sourcePopupPromise = page.waitForEvent('popup')
+  await page.getByRole('button', { name: 'Pop out player' }).click()
+  const sourcePopup = await sourcePopupPromise
+  await sourcePopup.waitForFunction(() => document.querySelector('video')?.readyState >= 2)
+  assert.equal(await sourcePopup.locator('meta[name="referrer"]').getAttribute('content'), 'no-referrer')
+  await sourcePopup.locator('video').evaluate((video) => video.load())
+  await sourcePopup.waitForFunction(() => document.querySelector('video')?.readyState >= 2)
+  assert.ok(popupReferrers.length >= 2)
+  assert.ok(popupReferrers.every((referer) => referer === null))
+  await sourcePopup.getByRole('button', { name: 'Pop player back in' }).click()
+  await page.waitForFunction(() => document.querySelector('video')?.readyState >= 2)
   await page.locator('video').evaluate((video) => { video.currentTime = 4 })
   await page.getByRole('button', { name: 'Clear source' }).click()
+  await context.route('**/api/wco/status', (route) => route.fulfill({ json: { available: false } }))
+  await context.route('https://graphql.anilist.co/**', (route) => route.fulfill({ json: { data: { Media: { recommendations: { nodes: [] } } } } }))
   assert.ok(!(await page.evaluate(() => localStorage.getItem('gptnime-cinema-v1'))).includes('cinema-test-fixture'))
   passed('Direct media is not rejected solely for a WCO CDN hostname; references stay session-only')
 

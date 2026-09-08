@@ -1,8 +1,27 @@
 # WCO playback investigation — September 7, 2026
 
-## Result
+## Resolved: native playback inside gptNime
 
-Cowboy Bebop episode 25 played successfully in WCO's normal player in headed Chrome. The same provider-issued video URL failed inside the actual gptNime cinema at `http://127.0.0.1:5190`. WCO's alternate Chromecast player also decoded the episode, but its issued media route failed from gptNime as well. **Inline WCO playback is not implemented or verified working.**
+The delivery issue is resolved for the tested episodes. Cowboy Bebop 25 played inside the actual gptNime cinema after adding the browser's standard `no-referrer` policy. The new local connector then prepared episode 25 from its exact page and episode 26 from the user's series link. Episode 26 played in the cinema, sought past five minutes, and continued through pop-out, pop-in and docking.
+
+The decisive controlled comparison used the same source and browser with cache disabled:
+
+| Local browser request | Result |
+| --- | --- |
+| Default policy, `Referer: http://127.0.0.1:5190` | 404 HTML; media failed |
+| `no-referrer`, no Referer header | 206 MP4; decoded with `readyState === 4` |
+
+A plain Node fetch, and a Node fetch carrying the observed referring player URL, both returned 404. Neither is used by the implementation. Delivery uses Chrome's ordinary video request with no referrer, with no media proxy or provider-header impersonation. The server's complete decision logic remains unknown; the working browser comparison is the implementation evidence.
+
+`index.html` sets the policy before resources load, and pop-out documents preserve it. [MDN documents the no-referrer policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Referrer-Policy). The local `server/wco.ts` connector obtains a fresh source through a temporary visible Chrome session, using the site's enabled Close/Play controls. It leaves human and premium checks to the provider. The frontend saves only stable episode/series/neighbor page links, keeping media URLs in memory.
+
+New local evidence is under ignored `output/research/delivery-2026-09-07/`: `01-live-wco-in-gptnime.png`, `02-live-wco-docked.png`, `live-cinema-proof.json`, `window-proof.json`, and `network.json`. Episode 26 decoded at 644 × 480 with a duration of 1450.955 seconds. This establishes successful playback for these samples, not all shows, movies, qualities or future provider changes.
+
+A final clean-browser run selected episode 25 from the series link using the finished connector. `03-final-live-cinema.png` and `final-live-proof.json` record real playback, seeking to six minutes, preserved transfer time, fresh cache-disabled MP4 delivery in both Document PiP and the regular popup, continued dock playback, and unchanged fixture ledger progress. The final `network.json` contains sanitized observations from this run. Automated checks include `npm run test:wco` and `CINEMA_HEADED=1 npm run test:cinema`, in addition to build and lint.
+
+## Initial result before the delivery fix
+
+Cowboy Bebop episode 25 played successfully in WCO's normal player in headed Chrome. The same provider-issued video URL initially failed inside the actual gptNime cinema at `http://127.0.0.1:5190`. WCO's alternate Chromecast player also decoded the episode, but its issued media route initially failed from gptNime as well. The remaining sections preserve that earlier investigation; the resolved result above supersedes its implementation status.
 
 This supersedes the earlier result that live WCO playback itself was unverified. It does not establish that every WCO episode, quality, server or browser behaves identically.
 
@@ -53,7 +72,7 @@ Opening the alternate player link independently as a top-level page returned 403
 
 ## Integration implications
 
-The current app already supports saving an exact episode page and opening it directly. It also permits direct HTTPS media URLs to be attempted using the normal browser video element. Neither capability makes these tested WCO video routes work from the app's origin.
+Before the delivery fix, the app supported saving an exact episode page and opening it directly. It also permitted direct HTTPS media URLs to be attempted using the normal browser video element. Those capabilities alone did not make the tested WCO video routes work from the app's origin.
 
 An inline integration needs both a supported way to resolve an episode to a source and delivery that works from gptNime. The provider's `frame-ancestors` restriction and its media delivery behavior are separate issues. No automatic resolver should be described as complete based only on receiving a source URL or a successful fixture test.
 
