@@ -30,6 +30,8 @@ This writes `~/.local/share/applications/gptnime.desktop`. After installation, s
 
 ## Local WCO Playback
 
-The dev server includes the WCO preparation connector; there is no separate service to start. Open a title's cinema, select its episode and Subbed/Dubbed language, paste an exact `wco.tv` episode or series link, and choose **Play here**. Chrome opens temporarily for provider preparation and closes when the source is ready. Any human verification must be completed in that window. The actual episode then plays in gptNime.
+The dev server includes the WCO preparation connector; there is no separate service to start. With WCO selected, click **Watch**, an episode or a title in the cinema lineup. gptNime finds its WCO page, resolves a fresh source and starts the video automatically. Next/Previous works the same way. Choose Subbed/Dubbed as desired; ambiguous matches are selectable inside the cinema. No WCO URL needs to be pasted.
+
+Chrome opens temporarily for provider preparation and closes when the source is ready. Any human verification must be completed in that window. **Source options** provides an optional title search and explicit page override; pasting an episode page updates its episode/language selection automatically.
 
 The connector uses the installed Chrome at `/usr/bin/google-chrome`; override `CHROME_PATH` before starting Vite if needed. It requires a desktop display. Preparation is available only through the local loopback address, even if Vite is exposed to a LAN. No browser extension, media proxy or changes to the user's regular browser profile are required.

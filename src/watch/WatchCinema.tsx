@@ -12,6 +12,9 @@ type Props = {
   onDetails: (id: string) => void
   onClose: () => void
 }
+type Preparation = { url?: string; language?: Language; search?: boolean; choose?: boolean }
+type Match = { url: string; title: string; language?: Language }
+type Selection = { id: string; episode: number; intent: number; preparation?: Preparation }
 type Layout = 'cinema' | 'dock' | 'window'
 type PictureWindow = Window & { documentPictureInPicture?: { requestWindow: (options: { width: number; height: number }) => Promise<Window> } }
 
@@ -36,9 +39,9 @@ function moveCinema(host: HTMLElement, destination: HTMLElement, blocked: () => 
 }
 
 export default function WatchCinema({ entries, request, onComplete, onDetails, onClose }: Props) {
-  const [selection, setSelection] = useState(() => {
+  const [selection, setSelection] = useState<Selection>(() => {
     const entry = entries.find((item) => item.id === request?.id) || entries[0]
-    return { id: entry?.id || '', episode: request?.episode || (entry ? firstEpisode(entry) : 1) }
+    return { id: entry?.id || '', episode: request?.episode || (entry ? firstEpisode(entry) : 1), intent: request ? 1 : 0 }
   })
   const [layout, setLayout] = useState<Layout>('cinema')
   const [query, setQuery] = useState('')
@@ -76,7 +79,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
     if (request?.serial === lastRequest.current) return
     lastRequest.current = request?.serial
     const requested = entries.find((item) => item.id === request?.id)
-    if (requested) setSelection({ id: requested.id, episode: request?.episode || firstEpisode(requested) })
+    if (requested) setSelection((previous) => ({ id: requested.id, episode: request?.episode || firstEpisode(requested), intent: previous.intent + 1 }))
     if (childRef.current) childRef.current.focus()
     else setLayout('cinema')
   }, [entries, request])
@@ -168,7 +171,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
     }
   }
 
-  const tune = (item: WatchTitle) => setSelection({ id: item.id, episode: firstEpisode(item) })
+  const tune = (item: WatchTitle) => setSelection((previous) => ({ id: item.id, episode: firstEpisode(item), intent: previous.intent + 1 }))
   const visibleEntries = entries.filter((item) => item.title.toLowerCase().includes(query.toLowerCase()))
 
   return createPortal(
@@ -190,7 +193,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
         {windowError && <p className="cinema-message cinema-error" role="alert">{windowError}</p>}
         <div className="cinema-workspace">
           <div className="cinema-main">
-            {entry ? <EpisodePlayer key={`${entry.id}:${selection.episode}`} entry={entry} episode={selection.episode} onComplete={onComplete} onEpisode={(episode) => setSelection({ id: entry.id, episode })} onRevealSource={() => { if (layout === 'dock') setLayout('cinema') }} onDetails={() => { if (layout !== 'window') setLayout('dock'); onDetails(entry.id) }} /> : <div className="cinema-empty"><Film size={38} /><h3>{entries.length ? 'Choose your next watch' : 'Your cinema starts here'}</h3><p>{entries.length ? 'Pick a title from your library to open its watch desk.' : 'Add a show or movie to your library, then press Watch.'}</p>{!entries.length && <button className="cinema-button primary" onClick={onClose}>Back to gptNime</button>}</div>}
+            {entry ? <EpisodePlayer key={`${entry.id}:${selection.episode}`} entry={entry} episode={selection.episode} intent={selection.intent} preparation={selection.preparation} onComplete={onComplete} onEpisode={(episode, preparation) => setSelection((previous) => ({ id: entry.id, episode, preparation, intent: previous.intent + 1 }))} onRevealSource={() => { if (layout === 'dock') setLayout('cinema') }} onDetails={() => { if (layout !== 'window') setLayout('dock'); onDetails(entry.id) }} /> : <div className="cinema-empty"><Film size={38} /><h3>{entries.length ? 'Choose your next watch' : 'Your cinema starts here'}</h3><p>{entries.length ? 'Pick a title from your library to open its watch desk.' : 'Add a show or movie to your library, then press Watch.'}</p>{!entries.length && <button className="cinema-button primary" onClick={onClose}>Back to gptNime</button>}</div>}
           </div>
           <aside className="cinema-library">
             <div className="cinema-library-heading"><div><span className="eyebrow">Your collection</span><h3>Tonight’s lineup</h3></div><span className="cinema-count">{entries.length}</span></div>
@@ -208,10 +211,10 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
   )
 }
 
-type Source = { url: string; name: string; key: string; local: boolean }
+type Source = { url: string; name: string; key: string; local: boolean; autoplay?: boolean }
 
-function EpisodePlayer({ entry, episode, onComplete, onEpisode, onDetails, onRevealSource }: {
-  entry: WatchTitle; episode: number; onComplete: Props['onComplete']; onEpisode: (episode: number) => void; onDetails: () => void; onRevealSource: () => void
+function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpisode, onDetails, onRevealSource }: {
+  entry: WatchTitle; episode: number; intent: number; preparation?: Preparation; onComplete: Props['onComplete']; onEpisode: (episode: number, preparation?: Preparation) => void; onDetails: () => void; onRevealSource: () => void
 }) {
   const [settings, setSettings] = useState(readWatchState)
   const [tab, setTab] = useState<'wco' | 'file' | 'url'>(settings.sourceTab)
@@ -229,6 +232,8 @@ function EpisodePlayer({ entry, episode, onComplete, onEpisode, onDetails, onRev
   const [providerAvailable, setProviderAvailable] = useState(false)
   const [preparing, setPreparing] = useState(false)
   const [playbackPage, setPlaybackPage] = useState('')
+  const [matches, setMatches] = useState<Match[]>([])
+  const autoplayAttempted = useRef(false)
   const resolutionRef = useRef<AbortController | null>(null)
   const [speed, setSpeed] = useState(1)
   const [ended, setEnded] = useState(false)
@@ -327,47 +332,86 @@ function EpisodePlayer({ entry, episode, onComplete, onEpisode, onDetails, onRev
     clearSource()
     sourceRef.current = next
     markedRef.current = false
+    autoplayAttempted.current = false
     playedRanges.current = []
     setSource(next); setLoading(true); setError(''); setNotice('')
   }
 
-  const prepareEpisode = async () => {
-    const url = wcoPage(playbackPage)
-    if (!url) {
-      setError('Paste a WCO episode or series link to play here.')
-      onRevealSource()
-      fileRef.current?.ownerDocument.querySelector<HTMLInputElement>('[data-wco-playback]')?.focus()
-      return
-    }
+  const prepareEpisode = async (options: Preparation = {}) => {
+    const language = options.language || settings.language
+    const state = readWatchState()
+    const url = options.url || (!options.search ? state.pages[`${entry.anilistId}:${episode}:${language}`] || state.pages[`${entry.anilistId}:title:${language}`] : undefined)
+    const titles = [...new Set((options.search ? [searchTitle] : [entry.titleEnglish, entry.title, ...(entry.synonyms || [])])
+      .filter((title): title is string => !!title && title.trim().length >= 2 && title.length <= 200))].slice(0, 8)
     cancelPreparation()
     const controller = new AbortController()
     resolutionRef.current = controller
-    setPreparing(true); setError(''); setNotice('')
+    setPreparing(true); setError(''); setNotice(''); setMatches([])
     videoRef.current?.pause()
-    const language = settings.language
     try {
-      const response = await fetch('/api/wco/resolve', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-        body: JSON.stringify({ url, episode, language, movie }),
-      })
+      // A cancelled browser needs a moment to close before the next one starts.
+      let response: Response
+      for (let attempt = 0; ; attempt++) {
+        response = await fetch('/api/wco/resolve', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+          body: JSON.stringify({ url, titles, episode, language, movie, choose: options.choose === true }),
+        })
+        if (response.status !== 409 || attempt >= 5) break
+        await response.body?.cancel()
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => { window.clearTimeout(timer); reject(new DOMException('Cancelled', 'AbortError')) }
+          const timer = window.setTimeout(() => { controller.signal.removeEventListener('abort', abort); resolve() }, 300 * (attempt + 1))
+          controller.signal.addEventListener('abort', abort, { once: true })
+          if (controller.signal.aborted) abort()
+        })
+      }
       const result = await response.json()
+      if (controller.signal.aborted) return
       if (!response.ok) throw new Error(result.error || 'WCO could not prepare this episode.')
+      if (result.kind === 'choices') {
+        const choices: Match[] = Array.isArray(result.choices) ? result.choices.filter((match: Match) => typeof match.title === 'string' && typeof match.url === 'string' && wcoPage(match.url)) : []
+        if (!choices.length) throw new Error('No matching title was found. Try another title in Source options.')
+        setMatches(choices); setNotice(result.message || 'Choose the matching title.'); onRevealSource()
+        return
+      }
       const videoUrl = typeof result.source === 'string' && mediaUrl(result.source)
       const resolvedPage = typeof result.pageUrl === 'string' && wcoPage(result.pageUrl)
       if (!videoUrl || !resolvedPage) throw new Error('WCO did not return a supported episode source.')
-      if (controller.signal.aborted) return
-      const pages = { ...readWatchState().pages, [pageKey]: resolvedPage }
-      if (new URL(url).pathname.startsWith('/anime/')) pages[titleKey] = url
-      if (episode > 1 && typeof result.previousPage === 'string' && wcoPage(result.previousPage)) pages[`${entry.anilistId}:${episode - 1}:${language}`] = result.previousPage
-      if (typeof result.nextPage === 'string' && wcoPage(result.nextPage)) pages[`${entry.anilistId}:${episode + 1}:${language}`] = result.nextPage
-      updateSettings({ pages })
-      chooseSource({ url: videoUrl, name: result.title || `${entry.title} · ${episodeLabel(entry, episode)}`, key: sourceFingerprint(resolvedPage), local: false })
-      setNotice('Episode ready. Press play when you’re ready.')
+      const resolvedLanguage: Language = result.language === 'sub' || result.language === 'dub' ? result.language : language
+      const pages = { ...readWatchState().pages, [`${entry.anilistId}:${episode}:${resolvedLanguage}`]: resolvedPage }
+      const series = result.seriesPage || (url && new URL(url).pathname.startsWith('/anime/') ? url : undefined)
+      if (typeof series === 'string' && wcoPage(series)) pages[`${entry.anilistId}:title:${resolvedLanguage}`] = series
+      if (episode > 1 && typeof result.previousPage === 'string' && wcoPage(result.previousPage)) pages[`${entry.anilistId}:${episode - 1}:${resolvedLanguage}`] = result.previousPage
+      if (typeof result.nextPage === 'string' && wcoPage(result.nextPage)) pages[`${entry.anilistId}:${episode + 1}:${resolvedLanguage}`] = result.nextPage
+      updateSettings({ pages, language: resolvedLanguage })
+      chooseSource({ url: videoUrl, name: result.title || `${entry.title} · ${episodeLabel(entry, episode)}`, key: sourceFingerprint(resolvedPage), local: false, autoplay: true })
+      if (result.notice) setNotice(result.notice)
     } catch (error) {
-      if (!controller.signal.aborted) setError(error instanceof Error ? error.message : 'WCO could not prepare this episode. Try again.')
+      if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : 'WCO could not prepare this episode. Try again.'); onRevealSource() }
     } finally {
       if (resolutionRef.current === controller) { resolutionRef.current = null; setPreparing(false) }
     }
+  }
+
+  // Changes to saved pages or bookmarks must not restart a playing episode.
+  const autoPrepare = useRef(() => {})
+  autoPrepare.current = () => { if (tab === 'wco') void prepareEpisode(preparation) }
+  useEffect(() => {
+    if (providerAvailable && intent > 0) autoPrepare.current()
+  }, [providerAvailable, intent])
+
+  const applyPage = (value: string, language?: Language) => {
+    const url = wcoPage(value)
+    if (!url) { setError('Use a WCO episode or series page beginning with https://.'); return }
+    const path = new URL(url).pathname
+    const namedEpisode = path.match(/\bepisode-(\d+)/i)
+    const selectedEpisode = !movie && namedEpisode ? Number(namedEpisode[1]) : episode
+    if (movie && namedEpisode) { setError('That link is a TV episode. Choose a movie page for this title.'); return }
+    if (selectedEpisode < 1 || (entry.episodesTotal && selectedEpisode > entry.episodesTotal)) { setError('That episode is outside this title’s episode list. Choose the matching title first.'); return }
+    const selectedLanguage = /\bsubbed\b/i.test(path) ? 'sub' : /\bdubbed\b/i.test(path) ? 'dub' : language || settings.language
+    updateSettings({ language: selectedLanguage })
+    if (selectedEpisode !== episode) onEpisode(selectedEpisode, { url, language: selectedLanguage })
+    else void prepareEpisode({ url, language: selectedLanguage })
   }
 
   const openProvider = (url?: string) => {
@@ -430,8 +474,15 @@ function EpisodePlayer({ entry, episode, onComplete, onEpisode, onDetails, onRev
             if (!video) return
             setDuration(video.duration); setLoading(false); setMediaError(''); video.playbackRate = speed
             const bookmark = readWatchState().bookmarks[bookmarkPrefix + source.key]
-            if (!video.dataset.cinemaMoving && bookmark && bookmark.time > 3 && bookmark.time < video.duration - 5 && Math.abs(bookmark.duration - video.duration) < 2) { video.currentTime = bookmark.time; setNotice(`Resumed at ${clockLabel(bookmark.time)}. Press play when you’re ready.`) }
-          }} onCanPlay={() => { setLoading(false); setMediaError('') }} onWaiting={() => setLoading(true)} onPlaying={() => { setLoading(false); setEnded(false) }} onTimeUpdate={handleTime} onPause={saveBookmark} onEnded={() => { handleTime(); saveBookmark(); setEnded(true) }} onError={() => { setLoading(false); setMediaError('This video could not be played. Check that the link points to a supported video file, or try an MP4 / WebM file.') }}>
+            if (!video.dataset.cinemaMoving && bookmark && bookmark.time > 3 && bookmark.time < video.duration - 5 && Math.abs(bookmark.duration - video.duration) < 2) { video.currentTime = bookmark.time; setNotice((previous) => `${previous ? `${previous} ` : ''}Resumed at ${clockLabel(bookmark.time)}.${source.autoplay ? '' : ' Press play when you’re ready.'}`) }
+          }} onCanPlay={() => {
+            setLoading(false); setMediaError('')
+            const video = videoRef.current
+            if (video && source.autoplay && !autoplayAttempted.current && !video.dataset.cinemaMoving) {
+              autoplayAttempted.current = true
+              void video.play().catch((error) => { if (error?.name !== 'AbortError' && videoRef.current === video) setNotice((previous) => `${previous ? `${previous} ` : ''}Press play to start; your browser requires another click.`) })
+            }
+          }} onWaiting={() => setLoading(true)} onPlaying={() => { setLoading(false); setEnded(false) }} onTimeUpdate={handleTime} onPause={saveBookmark} onEnded={() => { handleTime(); saveBookmark(); setEnded(true) }} onError={() => { setLoading(false); setMediaError('This video could not be played. Check that the link points to a supported video file, or try an MP4 / WebM file.') }}>
           {subtitle && <track key={subtitle.url} src={subtitle.url} kind="subtitles" srcLang="en" label={subtitle.name} default onError={() => setError('These subtitles could not be loaded. Choose a valid WebVTT (.vtt) file.')} />}
         </video>
         {loading && !mediaError && <span className="cinema-loading" role="status">Loading video…</span>}
@@ -449,7 +500,7 @@ function EpisodePlayer({ entry, episode, onComplete, onEpisode, onDetails, onRev
     <div className="cinema-controls">
       <div className="cinema-episode-navigation">
         <button className="cinema-icon" aria-label="Previous episode in cinema" disabled={episode <= 1 || movie} onClick={() => onEpisode(episode - 1)}><ChevronLeft size={18} /></button>
-        {movie ? <span className="cinema-feature"><Film size={16} /> Feature film</span> : <label>Episode <input aria-label="Cinema episode number" type="number" min="1" max={entry.episodesTotal || undefined} key={episode} defaultValue={episode} onBlur={(event) => { const value = Number(event.currentTarget.value); if (Number.isInteger(value) && value >= 1 && (!entry.episodesTotal || value <= entry.episodesTotal)) onEpisode(value); else event.currentTarget.value = String(episode) }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /><span>{entry.episodesTotal ? `of ${entry.episodesTotal}` : ''}</span></label>}
+        {movie ? <span className="cinema-feature"><Film size={16} /> Feature film</span> : <label>Episode <input aria-label="Cinema episode number" type="number" min="1" max={entry.episodesTotal || undefined} key={episode} defaultValue={episode} onBlur={(event) => { const value = Number(event.currentTarget.value); if (Number.isInteger(value) && value >= 1 && (!entry.episodesTotal || value <= entry.episodesTotal)) { if (value !== episode) onEpisode(value) } else event.currentTarget.value = String(episode) }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /><span>{entry.episodesTotal ? `of ${entry.episodesTotal}` : ''}</span></label>}
         <button className="cinema-icon" aria-label="Next episode in cinema" disabled={!nextAvailable} onClick={() => onEpisode(episode + 1)}><ChevronRight size={18} /></button>
       </div>
       <button className="cinema-button cinema-mark" disabled={watched} onClick={() => { markedRef.current = true; onComplete(entry.id, episode) }}><Check size={16} />{watched ? 'Watched' : episode > entry.progress + 1 ? `Mark through ep ${episode}` : movie ? 'Mark movie watched' : 'Mark watched'}</button>
@@ -464,12 +515,31 @@ function EpisodePlayer({ entry, episode, onComplete, onEpisode, onDetails, onRev
         <button className={tab === 'url' ? 'is-active' : ''} aria-pressed={tab === 'url'} onClick={() => chooseTab('url')}><Link2 size={18} /><span>Video URL<small>Play in cinema</small></span></button>
       </div>
       {tab === 'wco' && <div className="cinema-provider-panel">
-        <div className="cinema-provider-description"><p>{providerAvailable ? 'Bring a WCO link. Settle into your cinema.' : 'Find the show on WCO, then save its page for next time.'}</p><div className="cinema-language" role="group" aria-label="WCO language">{(['sub', 'dub'] as Language[]).map((language) => <button key={language} aria-pressed={settings.language === language} className={settings.language === language ? 'is-active' : ''} onClick={() => { cancelPreparation(); updateSettings({ language }) }}>{language === 'sub' ? 'Subbed' : 'Dubbed'}</button>)}</div></div>
-        {providerAvailable && <form className="cinema-url-panel" onSubmit={(event) => { event.preventDefault(); if (!preparing) void prepareEpisode() }}>
-          <label>WCO episode or series link<input data-wco-playback aria-label="WCO playback URL" type="url" value={playbackPage} onChange={(event) => setPlaybackPage(event.target.value)} placeholder="https://www.wco.tv/anime/…" required disabled={preparing} /></label>
-          {preparing ? <button className="cinema-button" type="button" onClick={(event) => { event.preventDefault(); cancelPreparation() }}><X size={16} />Cancel</button> : <button className="cinema-button primary" type="submit"><Play size={16} />Play here</button>}
-          <p className="cinema-hint" role={preparing ? 'status' : undefined}>{preparing ? 'Preparing your episode… If WCO asks for verification, complete it in the Chrome window. Playback will open here.' : 'A series link finds your selected episode and language. WCO opens briefly to prepare the video; your saved links work next time.'}</p>
-        </form>}
+        <div className="cinema-provider-description"><p>{providerAvailable ? 'Pick an episode. We’ll find it and start your cinema.' : 'Find the show on WCO, then save its page for next time.'}</p><div className="cinema-language" role="group" aria-label="WCO language">{(['sub', 'dub'] as Language[]).map((language) => <button key={language} aria-pressed={settings.language === language} className={settings.language === language ? 'is-active' : ''} onClick={() => {
+          if (language === settings.language) return
+          updateSettings({ language })
+          if (providerAvailable && (intent > 0 || source || preparing || matches.length)) void prepareEpisode({ language })
+        }}>{language === 'sub' ? 'Subbed' : 'Dubbed'}</button>)}</div></div>
+        {providerAvailable && <>
+          <div className="cinema-auto-actions">
+            {preparing ? <button className="cinema-button" type="button" onClick={(event) => { event.preventDefault(); cancelPreparation() }}><X size={16} />Cancel</button> : <button className="cinema-button primary" onClick={() => void prepareEpisode()}><Play size={16} />{source ? 'Reload episode' : error ? 'Retry playback' : movie ? 'Play movie' : `Play episode ${episode}`}</button>}
+            <button className="cinema-text-button" disabled={preparing} onClick={() => void prepareEpisode({ search: true, choose: true })}><Search size={14} />Find another match</button>
+          </div>
+          {preparing && <p className="cinema-hint" role="status">Finding and preparing {movie ? 'your movie' : `episode ${episode}`}… If WCO asks for verification, complete it in the Chrome window. Playback starts here.</p>}
+          {matches.length > 0 && <div className="cinema-matches" aria-label="WCO title matches">{matches.map((match) => <button className="cinema-button" key={match.url} onClick={() => applyPage(match.url, match.language)}><Play size={15} /><span>{match.title}</span><ChevronRight size={15} /></button>)}</div>}
+        </>}
+        <details className="cinema-source-options"><summary>Source options</summary>
+        {providerAvailable && <>
+          <form className="cinema-search-form" onSubmit={(event) => { event.preventDefault(); void prepareEpisode({ search: true, choose: true }) }}>
+            <input aria-label="Search WCO titles" value={searchTitle} onChange={(event) => setSearchTitle(event.target.value)} required minLength={2} maxLength={200} />
+            <button className="cinema-button" disabled={preparing}><Search size={15} />Search titles</button>
+          </form>
+          <form className="cinema-url-panel" onSubmit={(event) => { event.preventDefault(); if (!preparing) applyPage(playbackPage) }}>
+            <label>Use a specific WCO page<input data-wco-playback aria-label="WCO playback URL" type="url" value={playbackPage} onChange={(event) => setPlaybackPage(event.target.value)} placeholder="Optional: https://www.wco.tv/…" required disabled={preparing} /></label>
+            <button className="cinema-button" type="submit" disabled={preparing}><Play size={16} />Use this link</button>
+            <p className="cinema-hint">Optional. An episode link selects its episode and language automatically.</p>
+          </form>
+        </>}
         <form className="cinema-search-form" onSubmit={(event) => { event.preventDefault(); openProvider() }}>
           <input aria-label="WCO search title" value={searchTitle} onChange={(event) => setSearchTitle(event.target.value)} required maxLength={200} />
           <select aria-label="WCO search scope" value={searchScope} onChange={(event) => setSearchScope(event.target.value)}><option value="episodes">{movie ? 'Movie / episodes' : `Episode ${episode}`}</option><option value="series">Whole series</option></select>
@@ -481,7 +551,8 @@ function EpisodePlayer({ entry, episode, onComplete, onEpisode, onDetails, onRev
           if (!valid) { setError('Use a WCO show or episode page beginning with https://, rather than an embedded player or video link.'); return }
           updateSettings({ pages: { ...settings.pages, [pageScope === 'title' ? titleKey : pageKey]: valid } }); setPageDraft(''); setError(''); setNotice('WCO page saved for this title and language.')
         }}><label>WCO page URL<input aria-label="WCO page URL" type="url" placeholder="https://www.wco.tv/…" value={pageDraft} onChange={(event) => setPageDraft(event.target.value)} required /></label><label>Save for<select aria-label="Save WCO page for" value={pageScope} onChange={(event) => setPageScope(event.target.value)}><option value="episode">{episodeLabel(entry, episode)}</option><option value="title">This whole title</option></select></label><button className="cinema-button">Save page</button></form></details>
-        <p className="cinema-hint">{providerAvailable ? 'Search and browse links open WCO. Episode preparation follows its normal verification and availability requirements.' : 'WCO requires its own window. Availability, sign-in and playback are managed there; mark progress here when you finish.'}</p>
+        </details>
+        <p className="cinema-hint">{providerAvailable ? 'WCO opens briefly to prepare playback. Episode preparation follows its normal verification and availability requirements.' : 'WCO requires its own window. Availability, sign-in and playback are managed there; mark progress here when you finish.'}</p>
         <div className="cinema-provider-links"><button onClick={() => openProvider(WCO_CATALOGUES[settings.language])}>Browse {settings.language === 'sub' ? 'subbed' : 'dubbed'} anime <ExternalLink size={12} /></button><button onClick={() => openProvider(WCO_CATALOGUES.movies)}>Movies <ExternalLink size={12} /></button></div>
       </div>}
       {tab === 'file' && <div className="cinema-file-panel"><FileVideo size={29} /><div><strong>Bring your episode. We’ll set the scene.</strong><p>MP4, WebM and other formats your browser supports. Files stay on your device.</p></div><button className="cinema-button primary" onClick={() => fileRef.current?.click()}><FolderOpen size={16} />Choose file</button></div>}

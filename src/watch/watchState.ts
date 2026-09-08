@@ -3,6 +3,7 @@ export type WatchTitle = {
   anilistId: number
   title: string
   titleEnglish?: string
+  synonyms?: string[]
   format?: string | null
   coverImage?: string
   bannerImage?: string

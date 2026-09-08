@@ -19,6 +19,14 @@ New local evidence is under ignored `output/research/delivery-2026-09-07/`: `01-
 
 A final clean-browser run selected episode 25 from the series link using the finished connector. `03-final-live-cinema.png` and `final-live-proof.json` record real playback, seeking to six minutes, preserved transfer time, fresh cache-disabled MP4 delivery in both Document PiP and the regular popup, continued dock playback, and unchanged fixture ledger progress. The final `network.json` contains sanitized observations from this run. Automated checks include `npm run test:wco` and `CINEMA_HEADED=1 npm run test:cinema`, in addition to build and lint.
 
+## Automatic discovery — September 8, 2026
+
+Watch and episode selections now send title aliases, the episode number and language to the local connector without requiring a WCO link. It searches WCO’s public episode results first, compares the complete show/season prefix and exact episode number, and follows the provider-issued page. Series search and All Seasons episode lists provide a fallback; movie searches exclude numbered TV episodes. Duplicate editions and uncertain title matches appear as choices inside the cinema. Next/Previous resolves a fresh source from a remembered stable page or repeats discovery.
+
+The live DevTools run started from an isolated library with no saved WCO pages. Clicking Watch for Cowboy Bebop episode 25 automatically found `https://www.wco.tv/cowboy-bebop-episode-25-english-dubbed-2`, the exact link supplied by the user. WCO then held that page at “Performing security verification.” The series pages for Cowboy Bebop and Samurai Champloo were held at the same check. No verification controls were automated. This verifies live page discovery, but does not establish fresh live autoplay on September 8. The September 7 native-delivery evidence above remains separate.
+
+The browser regression suite reproduces episode 1/Subbed with the supplied episode 25/Dubbed link: the cinema updates to episode 25/Dubbed and autoplays real decoded fixture media. It also verifies lookup without saved URLs, strict title/season matching, language fallback, in-cinema choices, cancellation, stale-response protection and a busy resolver retry. The general headed cinema suite continues to cover native PiP, regular pop-out, docking, playback/resume and watch-history integrity. No real ledger data is modified by these tests.
+
 ## Initial result before the delivery fix
 
 Cowboy Bebop episode 25 played successfully in WCO's normal player in headed Chrome. The same provider-issued video URL initially failed inside the actual gptNime cinema at `http://127.0.0.1:5190`. WCO's alternate Chromecast player also decoded the episode, but its issued media route initially failed from gptNime as well. The remaining sections preserve that earlier investigation; the resolved result above supersedes its implementation status.

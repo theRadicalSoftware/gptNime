@@ -222,3 +222,13 @@ body.cinema-modal-open { overflow: hidden !important; }
   .watch-cinema { max-height: calc(100dvh - 24px); }
   .cinema-layout-window, .cinema-layout-dock { padding: 0; }
 }
+
+.cinema-auto-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin: 8px 0 16px; }
+.cinema-auto-actions .cinema-text-button { display: inline-flex; align-items: center; gap: 6px; }
+.cinema-source-options { margin: 18px 0; border-top: 1px solid #ffffff12; padding-top: 14px; }
+.cinema-source-options > summary { cursor: pointer; color: #b8b4aa; font-size: 12px; padding: 4px 0; }
+.cinema-source-options[open] > summary { margin-bottom: 16px; }
+.cinema-matches { display: grid; gap: 8px; margin: 16px 0; }
+.cinema-matches .cinema-button { width: 100%; text-align: left; justify-content: flex-start; white-space: normal; }
+.cinema-matches .cinema-button span { flex: 1; overflow-wrap: anywhere; }
+.cinema-matches .cinema-button svg { flex-shrink: 0; }

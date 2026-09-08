@@ -53,6 +53,7 @@ try {
   await page.screenshot({ path: `${output}/01-cinema-desktop.png`, fullPage: false })
   passed('Cinema opens with the next episode and includes completed titles and movies')
 
+  await page.getByText('Source options', { exact: true }).click()
   const popupPromise = page.waitForEvent('popup')
   await page.locator('.cinema-search-form').getByRole('button', { name: 'Find on WCO' }).click()
   const provider = await popupPromise
