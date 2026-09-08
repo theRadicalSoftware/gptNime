@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Link2, Maximize2, Minimize2, MonitorUp, Play, RotateCcw, Search, Subtitles, X } from 'lucide-react'
 import type { Language, WatchRequest, WatchTitle } from './watchState'
-import { clockLabel, episodeLabel, firstEpisode, mediaUrl, readWatchState, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
+import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, readWatchState, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
 import './WatchCinema.css'
 
 type Props = {
@@ -211,7 +211,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
   )
 }
 
-type Source = { url: string; name: string; key: string; local: boolean; autoplay?: boolean }
+type Source = { url: string; name: string; key: string; local: boolean; autoplay?: boolean; provider?: 'wco' }
 
 function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpisode, onDetails, onRevealSource }: {
   entry: WatchTitle; episode: number; intent: number; preparation?: Preparation; onComplete: Props['onComplete']; onEpisode: (episode: number, preparation?: Preparation) => void; onDetails: () => void; onRevealSource: () => void
@@ -238,6 +238,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const [matches, setMatches] = useState<Match[]>([])
   const autoplayAttempted = useRef(false)
   const resolutionRef = useRef<AbortController | null>(null)
+  const providerBrowserRef = useRef<'chrome' | 'brave'>('chrome')
   const [speed, setSpeed] = useState(1)
   const [ended, setEnded] = useState(false)
   const [duration, setDuration] = useState(0)
@@ -265,8 +266,13 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
 
   useEffect(() => {
     const controller = new AbortController()
-    void fetch('/api/wco/status', { signal: controller.signal }).then((response) => response.json())
-      .then((result) => setProviderAvailable(result.available === true)).catch(() => {})
+    void localPlaybackBrowser().then(async (browser) => {
+      if (controller.signal.aborted) return
+      providerBrowserRef.current = browser
+      const response = await fetch('/api/wco/status', { signal: controller.signal, headers: { 'X-WCO-Browser': browser } })
+      const result = await response.json()
+      if (!controller.signal.aborted) setProviderAvailable(result.available === true)
+    }).catch(() => {})
     return () => { controller.abort(); resolutionRef.current?.abort() }
   }, [])
 
@@ -276,7 +282,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     let timer = 0
     const poll = async () => {
       try {
-        const response = await fetch('/api/wco/status', { signal: controller.signal })
+        const response = await fetch('/api/wco/status', { signal: controller.signal, headers: { 'X-WCO-Browser': providerBrowserRef.current } })
         const status = await response.json()
         if (!controller.signal.aborted && status.requestId === preparationJob && typeof status.phase === 'string') setProviderPhase(status.phase)
       } catch { /* Preparation reports any terminal error through its own request. */ }
@@ -288,7 +294,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
 
   const showProvider = async () => {
     try {
-      const response = await fetch('/api/wco/focus', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const response = await fetch('/api/wco/focus', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-WCO-Browser': providerBrowserRef.current }, body: '{}' })
       if (!response.ok) throw new Error()
     } catch { setError('The WCO window is not open. Retry playback to open your saved session.') }
   }
@@ -326,9 +332,9 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
 
   useEffect(() => {
     if (!loading) return
-    const timer = window.setTimeout(() => setMediaError('This source is taking longer than expected. Check the video URL or choose another source.'), 15000)
+    const timer = window.setTimeout(() => setMediaError(source?.provider === 'wco' ? 'WCO’s video is taking longer than expected. Retry this episode to prepare a fresh source.' : 'This source is taking longer than expected. Check the video URL or choose another source.'), 15000)
     return () => window.clearTimeout(timer)
-  }, [loading])
+  }, [loading, source?.url, source?.provider])
 
   const updateSettings = (patch: Partial<ReturnType<typeof readWatchState>>) => {
     const next = { ...readWatchState(), ...patch }
@@ -381,7 +387,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
       let response: Response
       for (let attempt = 0; ; attempt++) {
         response = await fetch('/api/wco/resolve', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-WCO-Request': requestId }, signal: controller.signal,
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-WCO-Request': requestId, 'X-WCO-Browser': providerBrowserRef.current }, signal: controller.signal,
           body: JSON.stringify({ url, titles, episode, language, movie, choose: options.choose === true }),
         })
         if (response.status !== 409 || attempt >= 5) break
@@ -415,7 +421,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
       if (episode > 1 && typeof result.previousPage === 'string' && wcoPage(result.previousPage)) pages[`${entry.anilistId}:${episode - 1}:${resolvedLanguage}`] = result.previousPage
       if (typeof result.nextPage === 'string' && wcoPage(result.nextPage)) pages[`${entry.anilistId}:${episode + 1}:${resolvedLanguage}`] = result.nextPage
       updateSettings({ pages, language: resolvedLanguage })
-      chooseSource({ url: videoUrl, name: result.title || `${entry.title} · ${episodeLabel(entry, episode)}`, key: sourceFingerprint(resolvedPage), local: false, autoplay: true })
+      chooseSource({ url: videoUrl, name: result.title || `${entry.title} · ${episodeLabel(entry, episode)}`, key: sourceFingerprint(resolvedPage), local: false, autoplay: true, provider: 'wco' })
       if (result.notice) setNotice(result.notice)
     } catch (error) {
       if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : 'WCO could not prepare this episode. Try again.'); onRevealSource() }
@@ -513,11 +519,11 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
               autoplayAttempted.current = true
               void video.play().catch((error) => { if (error?.name !== 'AbortError' && videoRef.current === video) setNotice((previous) => `${previous ? `${previous} ` : ''}Press play to start; your browser requires another click.`) })
             }
-          }} onWaiting={() => setLoading(true)} onPlaying={() => { setLoading(false); setEnded(false) }} onTimeUpdate={handleTime} onPause={saveBookmark} onEnded={() => { handleTime(); saveBookmark(); setEnded(true) }} onError={() => { setLoading(false); setMediaError('This video could not be played. Check that the link points to a supported video file, or try an MP4 / WebM file.') }}>
+          }} onWaiting={() => setLoading(true)} onPlaying={() => { setLoading(false); setMediaError(''); setEnded(false) }} onTimeUpdate={handleTime} onPause={saveBookmark} onEnded={() => { handleTime(); saveBookmark(); setEnded(true) }} onError={() => { setLoading(false); setMediaError(source.provider === 'wco' ? 'WCO’s video could not load in this browser. Retry this episode to prepare a fresh source for your browser.' : 'This video could not be played. Check that the link points to a supported video file, or try an MP4 / WebM file.') }}>
           {subtitle && <track key={subtitle.url} src={subtitle.url} kind="subtitles" srcLang="en" label={subtitle.name} default onError={() => setError('These subtitles could not be loaded. Choose a valid WebVTT (.vtt) file.')} />}
         </video>
         {loading && !mediaError && <span className="cinema-loading" role="status">Loading video…</span>}
-        {mediaError && <div className="cinema-media-error" role="alert"><Film size={26} /><p>{mediaError}</p><button className="cinema-button" onClick={clearSource}>Choose another source</button></div>}
+        {mediaError && <div className="cinema-media-error" role="alert"><Film size={26} /><p>{mediaError}</p>{source.provider === 'wco' && <button className="cinema-button primary" disabled={preparing} onClick={() => { chooseTab('wco'); void prepareEpisode() }}>{preparing ? 'Preparing episode…' : 'Retry episode'}</button>}<button className="cinema-button" onClick={clearSource}>Choose another source</button></div>}
       </> : <div className="cinema-screen-intro">
         <span className="cinema-night-tag"><span /> YOUR AFTER-HOURS ESCAPE</span>
         <span className="cinema-screen-episode">{episodeLabel(entry, episode)}{!movie && entry.episodesTotal ? ` / ${entry.episodesTotal}` : ''}</span>
@@ -557,7 +563,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
             <button className="cinema-text-button" disabled={preparing} onClick={() => void prepareEpisode({ search: true, choose: true })}><Search size={14} />Find another match</button>
           </div>
           {preparing && <div className={`cinema-preparation${providerPhase === 'verification' ? ' needs-verification' : ''}`} role="status">
-            <p>{providerPhase === 'verification' ? 'WCO needs verification in its Chrome window. Complete the check there; playback continues here when WCO accepts it.' : providerPhase === 'searching' ? `Finding ${movie ? 'your movie' : `episode ${episode}`} on WCO…` : providerPhase === 'opening' ? 'Opening your WCO session…' : 'Preparing your video…'}</p>
+            <p>{providerPhase === 'verification' ? 'WCO needs verification. Use Show WCO window to complete the check; playback continues here when WCO accepts it.' : providerPhase === 'searching' ? `Finding ${movie ? 'your movie' : `episode ${episode}`} on WCO…` : providerPhase === 'opening' ? 'Opening your WCO session…' : 'Preparing your video…'}</p>
             <button className="cinema-button" onClick={() => void showProvider()}><ExternalLink size={14} />Show WCO window</button>
             {providerPhase === 'verification' && <small>Your WCO session stays open. If the check keeps returning after you click it, WCO has not accepted verification yet.</small>}
           </div>}
@@ -587,7 +593,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
           updateSettings({ pages: { ...settings.pages, [pageScope === 'title' ? titleKey : pageKey]: valid } }); setPageDraft(''); setError(''); setNotice('WCO page saved for this title and language.')
         }}><label>WCO page URL<input aria-label="WCO page URL" type="url" placeholder="https://www.wco.tv/…" value={pageDraft} onChange={(event) => setPageDraft(event.target.value)} required /></label><label>Save for<select aria-label="Save WCO page for" value={pageScope} onChange={(event) => setPageScope(event.target.value)}><option value="episode">{episodeLabel(entry, episode)}</option><option value="title">This whole title</option></select></label><button className="cinema-button">Save page</button></form></details>
         </details>
-        <p className="cinema-hint">{providerAvailable ? 'Your dedicated WCO window remembers its session between episodes. Playback follows the provider’s verification and availability requirements.' : 'WCO requires its own window. Availability, sign-in and playback are managed there; mark progress here when you finish.'}</p>
+        <p className="cinema-hint">{providerAvailable ? 'Episodes prepare in the background using a saved WCO session for your browser. Show the WCO window if verification or sign-in is needed.' : 'WCO requires its own window. Availability, sign-in and playback are managed there; mark progress here when you finish.'}</p>
         <div className="cinema-provider-links"><button onClick={() => openProvider(WCO_CATALOGUES[settings.language])}>Browse {settings.language === 'sub' ? 'subbed' : 'dubbed'} anime <ExternalLink size={12} /></button><button onClick={() => openProvider(WCO_CATALOGUES.movies)}>Movies <ExternalLink size={12} /></button></div>
       </div>}
       {tab === 'file' && <div className="cinema-file-panel"><FileVideo size={29} /><div><strong>Bring your episode. We’ll set the scene.</strong><p>MP4, WebM and other formats your browser supports. Files stay on your device.</p></div><button className="cinema-button primary" onClick={() => fileRef.current?.click()}><FolderOpen size={16} />Choose file</button></div>}

@@ -82,6 +82,9 @@ try {
   await context.route(mediaUrl, (route) => route.fulfill({ contentType: 'video/webm', body: media }))
   const request = { url: episodeUrl, titles: ['Session Fixture'], episode: 755, language: 'sub', movie: false, choose: false }
   const checkpoints = new Map()
+  // Preparation must not call the explicit user-facing focus action.
+  const show = session.show.bind(session)
+  session.show = async () => { assert.fail('Episode preparation stole window focus') }
   await assert.rejects(resolveWco(request, new AbortController().signal, session, checkpoints, () => {}), (error) => error.code === 'access')
   const popupPromise = context.waitForEvent('page')
   await reopened.getByRole('link', { name: 'Fixture sign in' }).click()
@@ -92,9 +95,10 @@ try {
   assert.equal(result.kind, 'source')
   assert.equal(result.source, mediaUrl)
   assert.equal(reopened.url(), 'about:blank')
+  session.show = show
   await login.close()
   await context.unrouteAll({ behavior: 'wait' })
-  console.log('✓ An access gate leaves sign-in available, and Retry reloads the episode with the accepted fixture session')
+  console.log('✓ Preparation never requests focus; access recovery reloads the episode with the accepted fixture session')
   await session.park(reopened)
   assert.equal(reopened.url(), 'about:blank')
   assert.equal(await session.show(), true)

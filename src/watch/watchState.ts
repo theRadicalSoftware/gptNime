@@ -16,6 +16,11 @@ export type WatchTitle = {
 
 export type WatchRequest = { id: string; episode?: number; serial: number }
 export type Language = 'sub' | 'dub'
+export async function localPlaybackBrowser(): Promise<'chrome' | 'brave'> {
+  const browserNavigator = navigator as Navigator & { brave?: { isBrave: () => Promise<boolean> } }
+  try { if (await browserNavigator.brave?.isBrave()) return 'brave' } catch { /* Use the default installed browser. */ }
+  return 'chrome'
+}
 type Bookmark = { time: number; duration: number; updatedAt: number }
 type WatchState = {
   language: Language

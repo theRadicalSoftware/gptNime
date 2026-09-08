@@ -37,7 +37,7 @@ export class WcoBrowser {
     const port = await localPort()
     const child = spawn(this.executable, [
       `--user-data-dir=${this.profile}`, '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${port}`,
-      '--no-first-run', '--no-default-browser-check', '--mute-audio', '--window-size=1100,860', '--new-window', 'about:blank',
+      '--no-first-run', '--no-default-browser-check', '--mute-audio', '--window-size=1100,860', '--no-startup-window', '--start-minimized',
     ], { stdio: 'ignore' })
     this.process = child
     let failed = false
@@ -58,7 +58,19 @@ export class WcoBrowser {
       }
     } catch { /* Do not expose browser endpoints or diagnostics to the UI. */ }
     child.kill('SIGTERM')
-    throw new WcoBrowserError('The dedicated WCO Chrome session could not open. If its previous window is still closing, wait a moment and retry playback.')
+    throw new WcoBrowserError('The dedicated WCO browser session could not open. If its previous window is still closing, wait a moment and retry playback.')
+  }
+
+  private async backgroundPage(): Promise<Page> {
+    const context = this.browser!.contexts()[0]
+    const protocol = await this.browser!.newBrowserCDPSession()
+    const created = context.waitForEvent('page', { timeout: 5000 }).catch(() => null)
+    try {
+      await protocol.send('Target.createTarget', { url: 'about:blank', background: true })
+      const page = await created
+      if (!page) throw new WcoBrowserError('The WCO preparation tab could not open. Retry playback.')
+      return page
+    } finally { await protocol.detach().catch(() => {}) }
   }
 
   async getPage(): Promise<Page> {
@@ -69,7 +81,8 @@ export class WcoBrowser {
     }
     if (!this.page || this.page.isClosed()) {
       const context = this.browser!.contexts()[0]
-      this.page = context.pages().find((page) => page.url() === 'about:blank') || await context.newPage()
+      this.page = context.pages().find((page) => page.url() === 'about:blank') || await this.backgroundPage()
+      await this.windowState(this.page, 'minimized')
       this.page.on('popup', (popup) => { if (this.preparing) void popup.close().catch(() => {}) })
     }
     return this.page
@@ -100,7 +113,7 @@ export class WcoBrowser {
     // Keep a blank tab so cancelling does not close Chrome's last window.
     // This also interrupts an in-flight navigation without erasing its profile.
     if (!this.closing && this.browser?.isConnected()) {
-      this.page = await page.context().newPage().catch(() => null)
+      this.page = await this.backgroundPage().catch(() => null)
       this.page?.on('popup', (popup) => { if (this.preparing) void popup.close().catch(() => {}) })
     }
     await page.close().catch(() => {})

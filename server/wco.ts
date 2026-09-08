@@ -2,9 +2,13 @@ import { access } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
 import type { Page } from 'playwright'
-import { WcoBrowser, WcoBrowserError } from './wcoBrowser'
+import { WcoBrowser, WcoBrowserError, wcoProfileDirectory } from './wcoBrowser'
 
 const chromePath = process.env.CHROME_PATH || '/usr/bin/google-chrome'
+const bravePath = process.env.BRAVE_PATH || '/usr/bin/brave-browser'
+export function providerBrowser(value: unknown): 'chrome' | 'brave' | null {
+  return value === undefined || value === 'chrome' ? 'chrome' : value === 'brave' ? 'brave' : null
+}
 const loopback = new Set(['127.0.0.1', 'localhost', '[::1]'])
 const deadlineMs = 120_000
 const verificationMs = 600_000
@@ -123,7 +127,7 @@ export async function waitForProvider(page: Page, budget: PreparationBudget, sig
       const title = await page.title().catch(() => '')
       if (!/just a moment|attention required|verify you are human/i.test(title)) return
       if (!started) { started = Date.now(); report('verification') }
-      if (Date.now() - started >= budget.verificationRemaining) throw new PlaybackError('WCO still has not accepted verification. Your WCO session is kept. Complete the check in its Chrome window, then retry playback. If it keeps looping there, the provider is still rejecting that session.', 'verification')
+      if (Date.now() - started >= budget.verificationRemaining) throw new PlaybackError('WCO still has not accepted verification. Your WCO session is kept. Complete the check in its browser window, then retry playback. If it keeps looping there, the provider is still rejecting that session.', 'verification')
       // Observe only. Never click, reload or inject code into a human challenge.
       await page.waitForTimeout(500)
     }
@@ -197,7 +201,6 @@ export async function resolveWco(request: ResolveRequest, signal: AbortSignal, s
   if (request.movie && request.url?.includes('/anime/')) throw new PlaybackError('Choose the movie result instead of a TV series.')
   const page = await session.getPage()
   signal.throwIfAborted()
-  await session.show()
   session.setPreparing(true)
   // Cancellation releases the work tab promptly; Chrome's profile survives it.
   let cancellation: Promise<void> | undefined
@@ -240,7 +243,7 @@ export async function resolveWco(request: ResolveRequest, signal: AbortSignal, s
     if (episodePage(page.url()) !== selectedPage || remembered?.reload) await page.goto(selectedPage, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
     while (Date.now() < budget.end) {
       signal.throwIfAborted()
-      if (page.isClosed()) throw new PlaybackError('The WCO preparation window was closed. Press Play here to try again.')
+      if (page.isClosed()) throw new PlaybackError('The WCO preparation window was closed. Retry playback to continue.')
       const title = await page.title().catch(() => '')
       // Leave verification controls entirely to the user in the visible window.
       if (/just a moment|attention required|verify you are human/i.test(title)) {
@@ -314,6 +317,12 @@ export async function resolveWco(request: ResolveRequest, signal: AbortSignal, s
       await page.waitForTimeout(350)
     }
     throw new PlaybackError('WCO did not provide a playable source in time. Try again and complete any verification while its window is open. Premium-only videos need the provider’s own access.')
+  } catch (error) {
+    const checkpoint = resumes.get(key)
+    // Reload failed player initialization on Retry, while preserving an unfinished
+    // human check so an accepted verification is not discarded by navigation.
+    if (checkpoint && !(error instanceof PlaybackError && error.code === 'verification')) resumes.set(key, { ...checkpoint, reload: true })
+    throw error
   } finally {
     signal.removeEventListener('abort', abort)
     await cancellation?.catch(() => {})
@@ -351,17 +360,24 @@ async function readRequest(req: IncomingMessage): Promise<ResolveRequest> {
 }
 
 export function wcoPlugin(): Plugin {
-  const session = new WcoBrowser(chromePath)
-  const resumes = new Map<string, ResumePoint>()
+  // Provider sources can be bound to the preparing browser. Use the installed
+  // viewer's browser, without overriding its identity or copying personal data.
+  const providers = {
+    chrome: { path: chromePath, session: new WcoBrowser(chromePath), resumes: new Map<string, ResumePoint>() },
+    brave: { path: bravePath, session: new WcoBrowser(bravePath, `${wcoProfileDirectory}-brave`), resumes: new Map<string, ResumePoint>() },
+  }
   let active: { controller: AbortController; phase: ProviderPhase; requestId: string | null } | null = null
-  const shutdown = () => { active?.controller.abort(); return session.close() }
+  const shutdown = async () => { active?.controller.abort(); await Promise.all(Object.values(providers).map(({ session }) => session.close())) }
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     const path = req.url?.split('?')[0]
     if (path !== '/api/wco/status' && path !== '/api/wco/resolve' && path !== '/api/wco/focus') { next(); return }
     if (!isLocal(req)) { json(res, 403, { error: 'The WCO connector is available only on this computer.' }); return }
+    const browser = providerBrowser(req.headers['x-wco-browser'])
+    if (!browser) { json(res, 400, { error: 'Choose a supported local playback browser.' }); return }
+    const { session, resumes, path: browserPath } = providers[browser]
     if (path === '/api/wco/status' && req.method === 'GET') {
-      const available = await access(chromePath).then(() => true, () => false)
-      json(res, 200, { available, automatic: true, persistent: true, busy: active !== null, phase: active?.phase || null, requestId: active?.requestId || null }); return
+      const available = await access(browserPath).then(() => true, () => false)
+      json(res, 200, { available, browser, automatic: true, persistent: true, busy: active !== null, phase: active?.phase || null, requestId: active?.requestId || null }); return
     }
     if (!['/api/wco/resolve', '/api/wco/focus'].includes(path) || req.method !== 'POST') { json(res, 405, { error: 'Method not allowed.' }); return }
     if (req.headers.origin !== `http://${req.headers.host}` || !req.headers['content-type']?.startsWith('application/json')) {

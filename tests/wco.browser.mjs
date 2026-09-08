@@ -8,7 +8,10 @@ const server = await createServer({ server: { host: '127.0.0.1', port: 5198, str
 await server.listen()
 let browser
 try {
-  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage } = await server.ssrLoadModule('/server/wco.ts')
+  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage, providerBrowser } = await server.ssrLoadModule('/server/wco.ts')
+  assert.equal(providerBrowser(undefined), 'chrome')
+  assert.equal(providerBrowser('brave'), 'brave')
+  assert.equal(providerBrowser('/usr/bin/untrusted'), null)
   assert.match(providerAccessMessage('This Video Is for Premium Users'), /premium accounts/)
   assert.equal(providerAccessMessage('Get PREMIUM Now! Close announcement. Play Video'), null)
   const series = 'https://www.wco.tv/anime/cowboy-bebop/?season=all'
@@ -65,6 +68,9 @@ try {
   assert.equal((await post({ ...request, episode: 0 })).status, 400)
   assert.equal((await post({ ...request, padding: 'x'.repeat(5000) })).status, 400)
   assert.equal((await fetch(`${base}/api/wco/resolve`)).status, 405)
+  const braveStatus = await (await fetch(`${base}/api/wco/status`, { headers: { 'X-WCO-Browser': 'brave' } })).json()
+  assert.equal(braveStatus.browser, 'brave')
+  assert.equal((await fetch(`${base}/api/wco/status`, { headers: { 'X-WCO-Browser': 'untrusted' } })).status, 400)
   assert.equal((await fetch(`${base}/api/wco/focus`, { method: 'POST', headers: { Origin: 'https://unrelated.example', 'Content-Type': 'application/json' }, body: '{}' })).status, 403)
   assert.equal((await fetch(`${base}/api/wco/focus`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: '{}' })).status, 409)
   console.log('✓ Local API rejects foreign origins, DNS rebinding hosts and invalid requests before opening a browser')
@@ -74,14 +80,19 @@ try {
   const now = new Date().toISOString()
   const ledger = { library: [{ id: '1', anilistId: 1, title: 'Cowboy Bebop', progress: 24, episodesTotal: 26, format: 'TV', status: 'watching', addedAt: now, updatedAt: now, detailsLoaded: true, episodeListLoaded: true, episodeList: [], genres: [], notes: '', rewatchStatus: 'none' }], history: [] }
   await context.addInitScript((data) => {
+    // Simulated browser identity for API contract coverage; live Brave is tested separately.
+    Object.defineProperty(navigator, 'brave', { value: { isBrave: async () => true } })
     if (!localStorage.getItem('gptnime-cinema-v1')) localStorage.setItem('gptnime-cinema-v1', JSON.stringify({ autoMark: false }))
     if (!localStorage.getItem('gptnime-tracker-library-v1')) localStorage.setItem('gptnime-tracker-library-v1', JSON.stringify(data))
   }, ledger)
   await context.route('https://graphql.anilist.co/**', (route) => route.fulfill({ json: { data: { Media: null } } }))
   let providerStatus = { available: true }
-  await context.route('**/api/wco/status', (route) => route.fulfill({ json: providerStatus }))
+  await context.route('**/api/wco/status', (route) => {
+    assert.equal(route.request().headers()['x-wco-browser'], 'brave')
+    return route.fulfill({ json: providerStatus })
+  })
   let focused = 0
-  await context.route('**/api/wco/focus', (route) => { focused++; return route.fulfill({ json: { shown: true } }) })
+  await context.route('**/api/wco/focus', (route) => { assert.equal(route.request().headers()['x-wco-browser'], 'brave'); focused++; return route.fulfill({ json: { shown: true } }) })
   const source = 'https://undisk4.wcostream.com/getvid?evid=private-fixture'
   const bytes = await readFile('tests/fixtures/cinema-test.webm')
   await context.route(source, async (route) => {
@@ -91,6 +102,7 @@ try {
   let pending
   const requests = []
   await context.route('**/api/wco/resolve', async (route) => {
+    assert.equal(route.request().headers()['x-wco-browser'], 'brave')
     requests.push(route.request().postDataJSON())
     assert.equal((await route.request().allHeaders()).origin, base)
     pending = route
@@ -178,6 +190,20 @@ try {
   await pending.fulfill({ json: { kind: 'source', source, pageUrl: episode, language: 'dub', title: 'Cowboy Bebop: Episode 25 English Dubbed' } })
   await page.waitForFunction(() => document.querySelector('video')?.paused === false)
   console.log('✓ Pasting episode 25 Dubbed while episode 1 Subbed is selected updates both controls and starts playback')
+
+  // A delivery failure must recover the current episode without asking for a URL.
+  await context.route(`${source}-failed`, (route) => route.fulfill({ status: 404, contentType: 'text/html', body: '<p>Unavailable fixture source</p>' }))
+  await context.route(`${source}-retry`, (route) => route.fulfill({ contentType: 'video/webm', body: bytes }))
+  await page.locator('video').evaluate((video, url) => { video.src = url }, `${source}-failed`)
+  await page.getByRole('alert').filter({ hasText: 'WCO’s video could not load in this browser' }).waitFor()
+  await page.getByRole('button', { name: 'Retry episode', exact: true }).click()
+  await page.waitForTimeout(150)
+  assert.equal(requests.at(-1).episode, 25)
+  assert.equal(requests.at(-1).url, episode)
+  await pending.fulfill({ json: { kind: 'source', source: `${source}-retry`, pageUrl: episode, language: 'dub', title: 'Cowboy Bebop: Episode 25 English Dubbed' } })
+  await page.waitForFunction(() => document.querySelector('video')?.paused === false)
+  assert.equal(await page.locator('.cinema-media-error').count(), 0)
+  console.log('✓ Browser selection accompanies every provider request, and failed delivery retries the same episode')
 
   // Changing away from a pending request must never play its late response.
   await page.getByRole('button', { name: 'Next episode in cinema' }).click()
