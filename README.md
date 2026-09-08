@@ -15,7 +15,7 @@ GPTNime is a local-first anime watch ledger for tracking what you are watching, 
 - Notification drawer with stale threshold, snooze, dismiss, mute title, watching-only, and high-priority-only controls.
 - GPTNime Cinema with Watch actions on cards, details, episode lists, and Continue Watching; a full-library lineup, movie support, docked playback, and pop-out / pop-in windows.
 - Local video files and direct MP4 / WebM URLs, VTT subtitles, playback speed, per-source resume points, and progress marking after 90% actual playback.
-- Automatic WCO title/episode lookup and native playback through the local connector. Click Watch or an episode; optional page links update the episode and language automatically. Provider verification and availability still apply. See [`docs/CINEMA.md`](docs/CINEMA.md).
+- Automatic WCO title/episode lookup and native playback through the local connector. Click Watch or an episode; optional page links update the episode and language automatically. A dedicated Chrome session preserves provider verification between attempts; the cinema distinguishes verification from premium-only access. Provider availability still applies. See [`docs/CINEMA.md`](docs/CINEMA.md).
 - Subtle easter eggs and ambient touches documented in [`docs/EASTER_EGGS.md`](docs/EASTER_EGGS.md).
 - Project-level UI conventions documented in [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md).
 - Local launcher setup documented in [`docs/LOCAL_LAUNCHER.md`](docs/LOCAL_LAUNCHER.md).
@@ -52,6 +52,8 @@ To install the searchable local launcher:
 npm run build
 npm run lint
 npm run test:cinema
+npm run test:wco
+npm run test:wco-session # requires a desktop display
 ```
 
 Browser checks use installed Chrome (`/usr/bin/google-chrome`; override with `CHROME_PATH`). Run `CINEMA_HEADED=1 npm run test:cinema` on a desktop to also test native Document Picture-in-Picture. Tests start an isolated Vite server on port 5197, use fixture library data, and save screenshots under `output/cinema/`.

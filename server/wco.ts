@@ -1,12 +1,24 @@
 import { access } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
-import { chromium, type Page } from 'playwright'
+import type { Page } from 'playwright'
+import { WcoBrowser, WcoBrowserError } from './wcoBrowser'
 
 const chromePath = process.env.CHROME_PATH || '/usr/bin/google-chrome'
 const loopback = new Set(['127.0.0.1', 'localhost', '[::1]'])
 const deadlineMs = 120_000
-class PlaybackError extends Error {}
+const verificationMs = 600_000
+export type ProviderPhase = 'opening' | 'searching' | 'verification' | 'preparing'
+type ReportPhase = (phase: ProviderPhase) => void
+type ResumePoint = { pageUrl: string; language: 'sub' | 'dub'; notice: string; seriesPage?: string; reload?: boolean }
+class PlaybackError extends Error {
+  constructor(message: string, readonly code?: 'verification' | 'access') { super(message) }
+}
+
+export function providerAccessMessage(body: string): string | null {
+  if (/this video is for premium users/i.test(body)) return 'WCO restricts this episode to premium accounts. If you already have access, sign in in the WCO window, then retry. Your WCO session is saved.'
+  return null
+}
 
 export function episodePage(value: unknown): string | null {
   if (typeof value !== 'string' || value.length > 2048) return null
@@ -89,29 +101,53 @@ export async function searchLinks(page: Page): Promise<Link[]> {
   })))
 }
 
-async function waitForProvider(page: Page, end: number, signal: AbortSignal) {
-  while (Date.now() < end) {
-    signal.throwIfAborted()
-    if (page.isClosed()) throw new PlaybackError('The WCO preparation window was closed. Retry playback to continue.')
-    if (!/just a moment|attention required|verify you are human/i.test(await page.title())) return
-    await page.waitForTimeout(500)
+export class PreparationBudget {
+  end: number
+  verificationRemaining: number
+  constructor(workMs = deadlineMs, humanMs = verificationMs) {
+    this.end = Date.now() + workMs
+    this.verificationRemaining = humanMs
   }
-  throw new PlaybackError('WCO is waiting for verification. Retry and complete its check in the Chrome window.')
+  accountVerification(elapsed: number) {
+    this.end += elapsed
+    this.verificationRemaining = Math.max(0, this.verificationRemaining - elapsed)
+  }
 }
 
-async function discover(page: Page, request: ResolveRequest, end: number, signal: AbortSignal) {
+export async function waitForProvider(page: Page, budget: PreparationBudget, signal: AbortSignal, report: ReportPhase, resume: ProviderPhase) {
+  let started = 0
+  try {
+    while (true) {
+      signal.throwIfAborted()
+      if (page.isClosed()) throw new PlaybackError('The WCO window was closed. Retry playback to continue with its saved session.')
+      const title = await page.title().catch(() => '')
+      if (!/just a moment|attention required|verify you are human/i.test(title)) return
+      if (!started) { started = Date.now(); report('verification') }
+      if (Date.now() - started >= budget.verificationRemaining) throw new PlaybackError('WCO still has not accepted verification. Your WCO session is kept. Complete the check in its Chrome window, then retry playback. If it keeps looping there, the provider is still rejecting that session.', 'verification')
+      // Observe only. Never click, reload or inject code into a human challenge.
+      await page.waitForTimeout(500)
+    }
+  } finally {
+    if (started) budget.accountVerification(Date.now() - started)
+    report(resume)
+  }
+}
+
+async function discover(page: Page, request: ResolveRequest, budget: PreparationBudget, signal: AbortSignal, report: ReportPhase) {
   const queries = [...new Set([...request.titles.slice(0, 2), request.titles[0]?.split(':')[0], ...request.titles.slice(2)].filter(Boolean))].slice(0, 3)
   let candidates: Link[] = []
+  report('searching')
   await page.goto('https://www.wco.tv/', { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
   const search = async (query: string, scope: 'episodes' | 'series') => {
-    await waitForProvider(page, end, signal)
+    await waitForProvider(page, budget, signal, report, 'searching')
+    if (Date.now() >= budget.end) throw new PlaybackError('WCO title lookup took too long. Retry playback to continue with your saved session.')
     await page.locator('input[name="catara"]').fill(query, { timeout: 10_000 })
     await page.locator('select[name="konuara"]').selectOption(scope)
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {}),
       page.locator('input[name="catara"]').press('Enter'),
     ])
-    await waitForProvider(page, end, signal)
+    await waitForProvider(page, budget, signal, report, 'searching')
     if (new URL(page.url()).hostname !== 'www.wco.tv' || new URL(page.url()).pathname !== '/search') throw new PlaybackError('WCO search is unavailable right now. Retry playback shortly.')
     return searchLinks(page)
   }
@@ -157,24 +193,26 @@ export async function episodeLinks(page: Page, catalogue: boolean): Promise<Link
   })))
 }
 
-async function resolveWco(request: ResolveRequest, signal: AbortSignal) {
+export async function resolveWco(request: ResolveRequest, signal: AbortSignal, session: WcoBrowser, resumes: Map<string, ResumePoint>, report: ReportPhase) {
   if (request.movie && request.url?.includes('/anime/')) throw new PlaybackError('Choose the movie result instead of a TV series.')
-  // A separate, temporary browser profile follows the site's normal page/player
-  // flow. It never reads the user's browser profile or solves human challenges.
-  const browser = await chromium.launch({ executablePath: chromePath, headless: false, args: ['--mute-audio'] })
-  const abort = () => { void browser.close().catch(() => {}) }
+  const page = await session.getPage()
+  signal.throwIfAborted()
+  await session.show()
+  session.setPreparing(true)
+  // Cancellation releases the work tab promptly; Chrome's profile survives it.
+  let cancellation: Promise<void> | undefined
+  const abort = () => { cancellation = session.cancel(page) }
   signal.addEventListener('abort', abort, { once: true })
+  const key = JSON.stringify(request)
+  const remembered = request.choose ? undefined : resumes.get(key)
+  const budget = new PreparationBudget()
   try {
-    signal.throwIfAborted()
-    const context = await browser.newContext({ viewport: { width: 1100, height: 780 } })
-    const page = await context.newPage()
-    context.on('page', (popup) => { if (popup !== page) void popup.close().catch(() => {}) })
-    const end = Date.now() + deadlineMs
-    let selectedPage = request.url
-    let language = request.language
-    let languageNotice = ''
+    if (signal.aborted) { abort(); signal.throwIfAborted() }
+    let selectedPage = remembered?.pageUrl || request.url
+    let language = remembered?.language || request.language
+    let languageNotice = remembered?.notice || ''
     if (!selectedPage) {
-      const discovery = await discover(page, request, end, signal)
+      const discovery = await discover(page, request, budget, signal, report)
       if (!discovery.match) {
         if (!discovery.candidates.length) throw new PlaybackError('No matching WCO title was found. Try another title search in Source options.')
         return { kind: 'choices', message: 'Choose the matching WCO title.', choices: discovery.candidates.map((link) => ({ ...link, language: linkLanguage(link) })) }
@@ -191,15 +229,24 @@ async function resolveWco(request: ResolveRequest, signal: AbortSignal) {
       }
     }
     let catalogue = selectedPage.includes('/anime/')
-    const seriesPage: string | undefined = catalogue ? selectedPage : undefined
-    await page.goto(selectedPage, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
-    while (Date.now() < end) {
+    const seriesPage: string | undefined = remembered?.seriesPage || (catalogue ? selectedPage : undefined)
+    const remember = () => {
+      resumes.set(key, { pageUrl: selectedPage!, language, notice: languageNotice, seriesPage })
+      if (resumes.size > 32) resumes.delete(resumes.keys().next().value!)
+    }
+    remember()
+    report('preparing')
+    // Retry the same selection without throwing away a check completed meanwhile.
+    if (episodePage(page.url()) !== selectedPage || remembered?.reload) await page.goto(selectedPage, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+    while (Date.now() < budget.end) {
       signal.throwIfAborted()
       if (page.isClosed()) throw new PlaybackError('The WCO preparation window was closed. Press Play here to try again.')
       const title = await page.title().catch(() => '')
       // Leave verification controls entirely to the user in the visible window.
       if (/just a moment|attention required|verify you are human/i.test(title)) {
-        await waitForProvider(page, end, signal)
+        session.setPreparing(false)
+        await waitForProvider(page, budget, signal, report, 'preparing')
+        session.setPreparing(true)
         continue
       }
       if (!episodePage(page.url())) throw new PlaybackError('WCO redirected outside its episode pages. Use an exact wco.tv episode link.')
@@ -222,12 +269,18 @@ async function resolveWco(request: ResolveRequest, signal: AbortSignal) {
           continue
         }
         selectedPage = matches[0]
+        remember()
         catalogue = false
         await page.goto(selectedPage, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
         continue
       }
       const mismatch = selectionError(title, { ...request, language })
       if (mismatch) throw new PlaybackError(mismatch)
+      const accessMessage = providerAccessMessage(await page.locator('body').innerText().catch(() => ''))
+      if (accessMessage) {
+        resumes.set(key, { pageUrl: selectedPage, language, notice: languageNotice, seriesPage, reload: true })
+        throw new PlaybackError(accessMessage, 'access')
+      }
       const frames = page.frames().filter((frame) => {
         try { return new URL(frame.url()).hostname === 'embed.wcostream.com' } catch { return false }
       })
@@ -248,6 +301,7 @@ async function resolveWco(request: ResolveRequest, signal: AbortSignal) {
           const links = await episodeLinks(page, false)
           const previous = matchingEpisodes(links, request.episode - 1, language)
           const next = matchingEpisodes(links, request.episode + 1, language)
+          await session.park(page)
           return {
             kind: 'source', source: media.source, pageUrl: selectedPage, seriesPage, title, language, notice: languageNotice,
             previousPage: previous.length === 1 ? previous[0] : null,
@@ -262,7 +316,10 @@ async function resolveWco(request: ResolveRequest, signal: AbortSignal) {
     throw new PlaybackError('WCO did not provide a playable source in time. Try again and complete any verification while its window is open. Premium-only videos need the provider’s own access.')
   } finally {
     signal.removeEventListener('abort', abort)
-    await browser.close().catch(() => {})
+    await cancellation?.catch(() => {})
+    session.setPreparing(false)
+    // Keep the dedicated browser and its cookies, including after verification
+    // errors. Closing it on every request caused accepted sessions to be lost.
   }
 }
 
@@ -294,50 +351,60 @@ async function readRequest(req: IncomingMessage): Promise<ResolveRequest> {
 }
 
 export function wcoPlugin(): Plugin {
-  let active: AbortController | null = null
+  const session = new WcoBrowser(chromePath)
+  const resumes = new Map<string, ResumePoint>()
+  let active: { controller: AbortController; phase: ProviderPhase; requestId: string | null } | null = null
+  const shutdown = () => { active?.controller.abort(); return session.close() }
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     const path = req.url?.split('?')[0]
-    if (path !== '/api/wco/status' && path !== '/api/wco/resolve') { next(); return }
+    if (path !== '/api/wco/status' && path !== '/api/wco/resolve' && path !== '/api/wco/focus') { next(); return }
     if (!isLocal(req)) { json(res, 403, { error: 'The WCO connector is available only on this computer.' }); return }
     if (path === '/api/wco/status' && req.method === 'GET') {
       const available = await access(chromePath).then(() => true, () => false)
-      json(res, 200, { available, automatic: true, busy: active !== null }); return
+      json(res, 200, { available, automatic: true, persistent: true, busy: active !== null, phase: active?.phase || null, requestId: active?.requestId || null }); return
     }
-    if (path !== '/api/wco/resolve' || req.method !== 'POST') { json(res, 405, { error: 'Method not allowed.' }); return }
+    if (!['/api/wco/resolve', '/api/wco/focus'].includes(path) || req.method !== 'POST') { json(res, 405, { error: 'Method not allowed.' }); return }
     if (req.headers.origin !== `http://${req.headers.host}` || !req.headers['content-type']?.startsWith('application/json')) {
       json(res, 403, { error: 'Start playback from the local gptNime cinema.' }); return
+    }
+    if (path === '/api/wco/focus') {
+      const shown = await session.show().catch(() => false)
+      json(res, shown ? 200 : 409, shown ? { shown: true } : { error: 'Start playback to open the WCO session.' }); return
     }
     let request: ResolveRequest
     try { request = await readRequest(req) } catch { json(res, 400, { error: 'Use a valid title and episode selection.' }); return }
     if (active) { json(res, 409, { error: 'Another episode is being prepared. Cancel it or wait for it to finish.' }); return }
     const controller = new AbortController()
-    active = controller
-    const timer = setTimeout(() => controller.abort(), deadlineMs + 15_000)
+    const rawRequestId = req.headers['x-wco-request']
+    const job = { controller, phase: 'opening' as ProviderPhase, requestId: typeof rawRequestId === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(rawRequestId) ? rawRequestId : null }
+    active = job
+    const timer = setTimeout(() => controller.abort(), deadlineMs + verificationMs + 15_000)
     const cancel = () => controller.abort()
     res.once('close', cancel)
     try {
-      const result = await resolveWco(request, controller.signal)
+      const result = await resolveWco(request, controller.signal, session, resumes, (phase) => { job.phase = phase })
       json(res, 200, result)
     } catch (error) {
       // Playwright errors may contain signed URLs. Only our own messages reach UI.
-      const message = error instanceof PlaybackError
-        ? error.message : 'WCO could not prepare this episode. Try again and complete any verification in its browser window.'
-      json(res, 502, { error: message })
+      const message = error instanceof PlaybackError || error instanceof WcoBrowserError
+        ? error.message : 'The WCO connection was interrupted. Retry playback to reconnect to your saved session.'
+      json(res, 502, { error: message, code: error instanceof PlaybackError ? error.code : undefined })
     } finally {
       clearTimeout(timer)
       res.removeListener('close', cancel)
-      if (active === controller) active = null
+      if (active === job) active = null
     }
   }
   return {
     name: 'gptnime-local-wco',
+    closeBundle: shutdown,
     configureServer(server) {
       server.middlewares.use((req, res, next) => { void middleware(req, res, next) })
-      server.httpServer?.once('close', () => active?.abort())
+      server.httpServer?.once('close', shutdown)
     },
     configurePreviewServer(server) {
       server.middlewares.use((req, res, next) => { void middleware(req, res, next) })
-      server.httpServer.once('close', () => active?.abort())
+      server.httpServer.once('close', shutdown)
     },
   }
 }

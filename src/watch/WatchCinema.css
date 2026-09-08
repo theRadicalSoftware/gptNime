@@ -232,3 +232,8 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-matches .cinema-button { width: 100%; text-align: left; justify-content: flex-start; white-space: normal; }
 .cinema-matches .cinema-button span { flex: 1; overflow-wrap: anywhere; }
 .cinema-matches .cinema-button svg { flex-shrink: 0; }
+
+.cinema-preparation { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px; margin-top: 14px; border: 1px solid #ffffff18; border-radius: 10px; color: #b9c4c4; font-size: 11px; line-height: 1.7; }
+.cinema-preparation > p { flex: 1 1 220px; }
+.cinema-preparation > small { flex-basis: 100%; color: #bdb29b; font-size: 10px; }
+.cinema-preparation.needs-verification { border-color: #e5c17c65; background: #e5c17c09; color: #e4d6bd; }

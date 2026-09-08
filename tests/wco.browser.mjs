@@ -8,7 +8,9 @@ const server = await createServer({ server: { host: '127.0.0.1', port: 5198, str
 await server.listen()
 let browser
 try {
-  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates } = await server.ssrLoadModule('/server/wco.ts')
+  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage } = await server.ssrLoadModule('/server/wco.ts')
+  assert.match(providerAccessMessage('This Video Is for Premium Users'), /premium accounts/)
+  assert.equal(providerAccessMessage('Get PREMIUM Now! Close announcement. Play Video'), null)
   const series = 'https://www.wco.tv/anime/cowboy-bebop/?season=all'
   const episode = 'https://www.wco.tv/cowboy-bebop-episode-25-english-dubbed-2'
   assert.equal(episodePage(series), series)
@@ -63,6 +65,8 @@ try {
   assert.equal((await post({ ...request, episode: 0 })).status, 400)
   assert.equal((await post({ ...request, padding: 'x'.repeat(5000) })).status, 400)
   assert.equal((await fetch(`${base}/api/wco/resolve`)).status, 405)
+  assert.equal((await fetch(`${base}/api/wco/focus`, { method: 'POST', headers: { Origin: 'https://unrelated.example', 'Content-Type': 'application/json' }, body: '{}' })).status, 403)
+  assert.equal((await fetch(`${base}/api/wco/focus`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: '{}' })).status, 409)
   console.log('✓ Local API rejects foreign origins, DNS rebinding hosts and invalid requests before opening a browser')
 
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--mute-audio'] })
@@ -74,7 +78,10 @@ try {
     if (!localStorage.getItem('gptnime-tracker-library-v1')) localStorage.setItem('gptnime-tracker-library-v1', JSON.stringify(data))
   }, ledger)
   await context.route('https://graphql.anilist.co/**', (route) => route.fulfill({ json: { data: { Media: null } } }))
-  await context.route('**/api/wco/status', (route) => route.fulfill({ json: { available: true } }))
+  let providerStatus = { available: true }
+  await context.route('**/api/wco/status', (route) => route.fulfill({ json: providerStatus }))
+  let focused = 0
+  await context.route('**/api/wco/focus', (route) => { focused++; return route.fulfill({ json: { shown: true } }) })
   const source = 'https://undisk4.wcostream.com/getvid?evid=private-fixture'
   const bytes = await readFile('tests/fixtures/cinema-test.webm')
   await context.route(source, async (route) => {
@@ -108,6 +115,13 @@ try {
   await page.waitForFunction(() => !!document.querySelector('.cinema-auto-actions button')?.textContent.includes('Cancel'))
   await page.waitForTimeout(150)
   assert.deepEqual(requests[0], { titles: ['Cowboy Bebop'], episode: 25, language: 'sub', movie: false, choose: false })
+  providerStatus = { available: true, requestId: pending.request().headers()['x-wco-request'], phase: 'verification' }
+  await page.getByRole('status').filter({ hasText: 'WCO needs verification' }).waitFor()
+  await page.getByRole('button', { name: 'Show WCO window', exact: true }).click()
+  assert.equal(focused, 1)
+  providerStatus = { ...providerStatus, phase: 'preparing' }
+  await page.getByRole('status').filter({ hasText: 'Preparing your video' }).waitFor()
+  console.log('✓ Verification has a distinct live status and can bring the same WCO window forward')
   await pending.fulfill({ json: { kind: 'source', source, pageUrl: episode, seriesPage: series, language: 'dub', notice: 'WCO has this episode dubbed; using that version.', title: 'Cowboy Bebop: Episode 25 English Dubbed', previousPage: 'https://www.wco.tv/cowboy-bebop-episode-24-english-dubbed-2', nextPage: 'https://www.wco.tv/cowboy-bebop-episode-26-english-dubbed-2' } })
   await page.waitForFunction(() => { const video = document.querySelector('video'); return video && !video.paused && video.currentTime > 0.2 })
   assert.equal(await page.getByRole('button', { name: 'Dubbed', exact: true }).getAttribute('aria-pressed'), 'true')
@@ -138,8 +152,10 @@ try {
   await page.getByLabel('WCO title matches').getByRole('button', { name: 'Cowboy Bebop', exact: true }).click()
   await page.waitForTimeout(150)
   assert.equal(requests.at(-1).url, series)
-  await pending.fulfill({ status: 502, json: { error: 'WCO is temporarily unavailable. Retry playback shortly.' } })
-  await page.getByRole('alert').filter({ hasText: 'temporarily unavailable' }).waitFor()
+  await pending.fulfill({ status: 502, json: { code: 'access', error: 'WCO restricts this episode to premium accounts.' } })
+  await page.getByRole('alert').filter({ hasText: 'premium accounts' }).waitFor()
+  await page.getByRole('button', { name: 'Open WCO session', exact: true }).click()
+  assert.equal(focused, 2)
   console.log('✓ Ambiguous matches are selectable in the cinema and provider errors remain visible')
 
   // Reproduce the screenshot: episode 1/Subbed, pasted episode 25/Dubbed.
