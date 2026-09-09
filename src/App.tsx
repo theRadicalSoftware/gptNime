@@ -37,6 +37,8 @@ import {
 import './App.css'
 import WatchCinema from './watch/WatchCinema'
 import type { WatchRequest } from './watch/watchState'
+import { firstEpisode } from './watch/watchState'
+import { scheduleEpisodePreparation, useWatchPreparation } from './watch/watchPreparation'
 
 const STORAGE_KEY = 'gptnime-tracker-library-v1'
 const FOCUS_LAYOUT_KEY = 'gptnime-focus-layout-v1'
@@ -2015,6 +2017,7 @@ function App() {
   const initialState = useMemo(readStoredState, [])
   const initialNotificationPreferences = useMemo(readNotificationPreferences, [])
   const [library, setLibrary] = useState<AnimeEntry[]>(initialState.library)
+  useWatchPreparation(library)
   const [history, setHistory] = useState<HistoryEvent[]>(initialState.history)
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(initialNotificationPreferences)
   const [view, setView] = useState<ViewName>('dashboard')
@@ -2144,6 +2147,11 @@ function App() {
     () => library.find((entry) => entry.id === selectedId) || null,
     [library, selectedId],
   )
+
+  useEffect(() => {
+    if (!selectedEntry || animeChannelOpen || (view !== 'library' && !focusModalOpen)) return
+    return scheduleEpisodePreparation(selectedEntry, firstEpisode(selectedEntry))
+  }, [selectedEntry, view, focusModalOpen, animeChannelOpen])
 
   useEffect(() => {
     if (!selectedEntry) return
@@ -3884,7 +3892,7 @@ function Dashboard({
                     </div>
                   </div>
                   <div className="active-watch-actions">
-                  <button className="icon-button" type="button" aria-label={`Watch ${entry.title}`} title={`Watch ${entry.title}`} onClick={() => onWatch(entry)}><Play size={18} /></button>
+                  <button className="icon-button" type="button" aria-label={`Watch ${entry.title}`} title={`Watch ${entry.title}`} data-watch-title={entry.id} data-watch-episode={firstEpisode(entry)} onClick={() => onWatch(entry)}><Play size={18} /></button>
                   <button
                     className="icon-button"
                     type="button"
@@ -4797,7 +4805,7 @@ function AnimeFocusModal({
       >
         <header className="focus-modal-hero" style={{ '--focus-hero': `url(${heroImage})` } as CSSProperties}>
           <div className="focus-modal-actions">
-            <button className="icon-text-button strong" type="button" onClick={() => onWatch(entry)}><Play size={16} /><span>{entry.format === 'MOVIE' ? 'Watch movie' : 'Watch'}</span></button>
+            <button className="icon-text-button strong" type="button" data-watch-title={entry.id} data-watch-episode={firstEpisode(entry)} onClick={() => onWatch(entry)}><Play size={16} /><span>{entry.format === 'MOVIE' ? 'Watch movie' : 'Watch'}</span></button>
             <button
               className="icon-button"
               type="button"
@@ -4961,7 +4969,7 @@ function AnimeFocusModal({
                       className={watched ? 'episode-row episode-row-watched' : 'episode-row'}
                       key={episode.number}
                       type="button"
-                      onClick={() => onWatch(entry, episode.number)}
+                      data-watch-title={entry.id} data-watch-episode={episode.number} onClick={() => onWatch(entry, episode.number)}
                     >
                       <span className="episode-number">{episode.number}</span>
                       <span className="episode-copy">
@@ -5272,7 +5280,7 @@ function LibraryView({
                   </div>
                 </div>
 
-                <button className="icon-text-button strong detail-watch-button" type="button" onClick={() => onWatch(selectedEntry)}><Play size={17} /><span>{selectedEntry.format === 'MOVIE' ? 'Watch movie' : 'Open in cinema'}</span></button>
+                <button className="icon-text-button strong detail-watch-button" type="button" data-watch-title={selectedEntry.id} data-watch-episode={firstEpisode(selectedEntry)} onClick={() => onWatch(selectedEntry)}><Play size={17} /><span>{selectedEntry.format === 'MOVIE' ? 'Watch movie' : 'Open in cinema'}</span></button>
 
                 {selectedGroup && selectedGroup.entries.length > 1 && (
                   <section className="season-switcher" aria-label={`${selectedGroup.title} seasons in library`}>
@@ -5471,7 +5479,7 @@ function LibraryView({
                             className={watched ? 'episode-row episode-row-watched' : 'episode-row'}
                             key={episode.number}
                             type="button"
-                            onClick={() => onWatch(selectedEntry, episode.number)}
+                            data-watch-title={selectedEntry.id} data-watch-episode={episode.number} onClick={() => onWatch(selectedEntry, episode.number)}
                           >
                             <span className="episode-number">{episode.number}</span>
                             <span className="episode-copy">
@@ -5728,7 +5736,7 @@ function AnimeCard({
           total={group.episodesTotal}
         />
         <div className="card-actions">
-          <button className="card-watch-button" type="button" aria-label={`Watch ${group.active.title}`} onClick={() => onWatch(group.active)}><Play size={13} /><span>Watch</span></button>
+          <button className="card-watch-button" type="button" aria-label={`Watch ${group.active.title}`} data-watch-title={group.active.id} data-watch-episode={firstEpisode(group.active)} onClick={() => onWatch(group.active)}><Play size={13} /><span>Watch</span></button>
           <button
             className="mini-icon-button"
             type="button"

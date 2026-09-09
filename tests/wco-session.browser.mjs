@@ -144,6 +144,12 @@ try {
   assert.equal(searches, 1)
   assert.equal(episodeLoads, 4)
   console.log('✓ Direct normal search skips the homepage; recent sources avoid repeated preparation and Reload obtains a fresh source')
+  const fallback = { ...automatic, language: 'dub' }
+  assert.equal((await resolveWco(fallback, new AbortController().signal, session, checkpoints, () => {})).language, 'sub')
+  assert.equal(searches, 2)
+  assert.equal(episodeLoads, 5)
+  assert.equal((await resolveWco(fallback, new AbortController().signal, session, checkpoints, () => {})).language, 'sub')
+  assert.equal(episodeLoads, 5, 'The exact remembered language fallback can reuse its prepared source')
   session.show = show
   await login.close()
   await context.unrouteAll({ behavior: 'wait' })

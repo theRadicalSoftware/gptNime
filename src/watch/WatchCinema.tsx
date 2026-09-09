@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Link2, LoaderCircle, Maximize2, Minimize2, MonitorUp, Play, RotateCcw, Search, Subtitles, X } from 'lucide-react'
 import type { Language, WatchRequest, WatchTitle } from './watchState'
 import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, readWatchState, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
+import { episodePreparation, prefetchEpisode, scheduleEpisodePreparation } from './watchPreparation'
 import './WatchCinema.css'
 
 type Props = {
@@ -53,6 +54,12 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
   closeRef.current = onClose
   const entry = entries.find((item) => item.id === selection.id)
   const lastRequest = useRef(request?.serial)
+  const hoverPreparation = useRef<(() => void) | null>(null)
+  useEffect(() => () => hoverPreparation.current?.(), [])
+  const warmTitle = (item: WatchTitle) => {
+    hoverPreparation.current?.()
+    hoverPreparation.current = scheduleEpisodePreparation(item, firstEpisode(item))
+  }
 
   useEffect(() => {
     host.className = 'cinema-portal'
@@ -199,7 +206,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
             <div className="cinema-library-heading"><div><span className="eyebrow">Your collection</span><h3>Tonight’s lineup</h3></div><span className="cinema-count">{entries.length}</span></div>
             <label className="cinema-filter"><Search size={16} /><input aria-label="Find a title in cinema" placeholder="Find a show or movie" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
             <div className="cinema-queue">
-              {visibleEntries.map((item) => <button className={`cinema-queue-row${item.id === entry?.id ? ' is-active' : ''}`} key={item.id} onClick={() => tune(item)} aria-pressed={item.id === entry?.id}>
+              {visibleEntries.map((item) => <button className={`cinema-queue-row${item.id === entry?.id ? ' is-active' : ''}`} key={item.id} onClick={() => tune(item)} onPointerEnter={() => warmTitle(item)} onPointerLeave={() => hoverPreparation.current?.()} onFocus={() => warmTitle(item)} onBlur={() => hoverPreparation.current?.()} aria-pressed={item.id === entry?.id}>
                 <img src={item.coverImage || '/art/cinema-rooftop.png'} alt="" loading="lazy" /><span><strong>{item.title}</strong><small>{item.format === 'MOVIE' ? 'Movie' : `${item.progress} watched${item.episodesTotal ? ` / ${item.episodesTotal}` : ''}`}</small><em>{item.id === entry?.id ? 'In the cinema' : item.status === 'completed' ? 'Watch again' : episodeLabel(item, firstEpisode(item))}</em></span><Play size={14} />
               </button>)}
               {!visibleEntries.length && <p className="cinema-hint">{query ? 'No titles match that search.' : 'Your library will appear here.'}</p>}
@@ -245,6 +252,11 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const [ended, setEnded] = useState(false)
   const [duration, setDuration] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
+  const [playing, setPlaying] = useState(false)
+  const [ahead, setAhead] = useState<{ key: string; episode: number; expiresAt: number } | null>(null)
+  const aheadAttempted = useRef(new Set<string>())
+  const entryRef = useRef(entry)
+  entryRef.current = entry
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const subtitleRef = useRef<HTMLInputElement>(null)
@@ -263,6 +275,33 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const titleKey = `${entry.anilistId}:title:${settings.language}`
   const savedPage = settings.pages[pageKey] || settings.pages[titleKey]
   const bookmarkPrefix = `${entry.anilistId}:${episode}:`
+  const aheadKey = `${entry.id}:${episode}:${settings.language}`
+  const nearEnd = duration > 0 && (duration - currentTime) / speed <= 60
+  const aheadEpisode = !source && intent === 0 ? episode : source?.provider === 'wco' && nextAvailable && nearEnd ? episode + 1 : 0
+
+  useEffect(() => {
+    if (!providerAvailable || !hiddenPreparation || preparing || tab !== 'wco' || !aheadEpisode || (source && !playing)) return
+    const attempt = `${aheadKey}:${aheadEpisode}`
+    if (aheadAttempted.current.has(attempt)) return
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      aheadAttempted.current.add(attempt)
+      setAhead({ key: aheadKey, episode: aheadEpisode, expiresAt: 0 })
+      void prefetchEpisode(entryRef.current, aheadEpisode, settings.language, controller.signal).then((expiresAt) => {
+        if (!controller.signal.aborted) setAhead(expiresAt ? { key: aheadKey, episode: aheadEpisode, expiresAt } : null)
+      }).catch(() => { if (!controller.signal.aborted) setAhead(null) })
+    }, 700)
+    return () => {
+      window.clearTimeout(timer); controller.abort()
+      setAhead((previous) => previous?.key === aheadKey && !previous.expiresAt ? null : previous)
+    }
+  }, [aheadEpisode, aheadKey, providerAvailable, hiddenPreparation, preparing, tab, settings.language, playing, source])
+
+  useEffect(() => {
+    if (!ahead?.expiresAt) return
+    const timer = window.setTimeout(() => setAhead(null), Math.max(0, ahead.expiresAt - Date.now()))
+    return () => window.clearTimeout(timer)
+  }, [ahead])
 
   useEffect(() => { setPlaybackPage(savedPage || '') }, [savedPage])
 
@@ -387,10 +426,9 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
 
   const prepareEpisode = async (options: Preparation = {}) => {
     const language = options.language || settings.language
-    const state = readWatchState()
-    const url = options.url || (!options.search ? state.pages[`${entry.anilistId}:${episode}:${language}`] || state.pages[`${entry.anilistId}:title:${language}`] : undefined)
-    const titles = [...new Set((options.search ? [searchTitle] : [entry.titleEnglish, entry.title, ...(entry.synonyms || [])])
-      .filter((title): title is string => !!title && title.trim().length >= 2 && title.length <= 200))].slice(0, 8)
+    const request = episodePreparation(entry, episode, language)
+    const url = options.url || (!options.search ? request.url : undefined)
+    const titles = options.search ? [searchTitle].filter((title) => title.trim().length >= 2 && title.length <= 200) : request.titles
     cancelPreparation()
     const controller = new AbortController()
     resolutionRef.current = controller
@@ -541,7 +579,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
             if (video && source.autoplay && !autoplayAttempted.current && !video.dataset.cinemaMoving) {
               startVideo(video)
             }
-          }} onWaiting={() => setLoading(true)} onPlaying={() => { setLoading(false); setMediaError(''); setEnded(false) }} onTimeUpdate={handleTime} onPause={saveBookmark} onEnded={() => { handleTime(); saveBookmark(); setEnded(true) }} onError={() => { setLoading(false); setMediaError(source.provider === 'wco' ? 'WCO’s video could not load in this browser. Retry this episode to prepare a fresh source for your browser.' : 'This video could not be played. Check that the link points to a supported video file, or try an MP4 / WebM file.') }}>
+          }} onWaiting={() => setLoading(true)} onPlaying={() => { setPlaying(true); setLoading(false); setMediaError(''); setEnded(false) }} onTimeUpdate={handleTime} onPause={() => { setPlaying(false); saveBookmark() }} onEnded={() => { handleTime(); saveBookmark(); setEnded(true) }} onError={() => { setPlaying(false); setLoading(false); setMediaError(source.provider === 'wco' ? 'WCO’s video could not load in this browser. Retry this episode to prepare a fresh source for your browser.' : 'This video could not be played. Check that the link points to a supported video file, or try an MP4 / WebM file.') }}>
           {subtitle && <track key={subtitle.url} src={subtitle.url} kind="subtitles" srcLang="en" label={subtitle.name} default onError={() => setError('These subtitles could not be loaded. Choose a valid WebVTT (.vtt) file.')} />}
         </video>
         {loading && !mediaError && <span className="cinema-loading" role="status">Loading video…</span>}
@@ -574,6 +612,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
       <button className="cinema-button cinema-mark" disabled={watched} onClick={() => { markedRef.current = true; onComplete(entry.id, episode) }}><Check size={16} />{watched ? 'Watched' : episode > entry.progress + 1 ? `Mark through ep ${episode}` : movie ? 'Mark movie watched' : 'Mark watched'}</button>
       <button className="cinema-icon cinema-details-link" aria-label="Open title details" title="Title details" onClick={onDetails}><ExternalLink size={16} /></button>
     </div>
+    {!preparing && tab === 'wco' && ahead?.key === aheadKey && <div className="cinema-ahead" role="status">{ahead.expiresAt ? <Check size={12} /> : <LoaderCircle size={12} className="cinema-version-spinner" />}<span>{ahead.expiresAt ? `Episode ${ahead.episode} prepared` : `Getting episode ${ahead.episode} ready in the background…`}</span></div>}
     {ended && <div className="cinema-finished" role="status"><span><Check size={17} />{nextAvailable ? 'Ready for the next episode?' : 'That’s a wrap. Thanks for watching.'}</span>{nextAvailable && <button className="cinema-button primary" onClick={() => onEpisode(episode + 1)}>Episode {episode + 1}<ChevronRight size={16} /></button>}</div>}
     <div className="cinema-source-desk">
       <div className="cinema-source-heading"><span className="eyebrow">Watch your way</span><span>Choose a source</span></div>

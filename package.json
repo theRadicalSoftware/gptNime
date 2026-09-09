@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test:cinema": "node tests/cinema.browser.mjs",
     "test:wco": "node tests/wco.browser.mjs",
-    "test:wco-session": "node tests/wco-session.browser.mjs"
+    "test:wco-session": "node tests/wco-session.browser.mjs",
+    "test:wco-preparation": "node tests/wco-preparation.mjs"
   },
   "dependencies": {
     "framer-motion": "12.40.0",

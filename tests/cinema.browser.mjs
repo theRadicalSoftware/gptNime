@@ -33,6 +33,7 @@ try {
   }
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: process.env.CINEMA_HEADED !== '1', args: ['--mute-audio'] })
   const context = await browser.newContext({ viewport: { width: 1440, height: 1080 }, storageState: storage() })
+  await context.route('**/api/wco/prefetch', route => route.fulfill({ json: { ready: false, expiresAt: 0 } }))
   await context.route('**/api/wco/status', (route) => route.fulfill({ json: { available: false } }))
   await context.route('https://graphql.anilist.co/**', (route) => route.fulfill({ json: { data: { Media: { recommendations: { nodes: [] } } } } }))
   const providerRequests = []

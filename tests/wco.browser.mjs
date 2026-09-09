@@ -85,6 +85,12 @@ try {
   assert.equal((await post({ ...request, url: 'http://127.0.0.1/private' })).status, 400)
   assert.equal((await post({ ...request, episode: 0 })).status, 400)
   assert.equal((await post({ ...request, refresh: 'yes' })).status, 400)
+  const prefetch = (body, origin = base) => fetch(`${base}/api/wco/prefetch`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify(body) })
+  assert.equal((await prefetch(request, 'https://unrelated.example')).status, 403)
+  assert.equal((await prefetch({ ...request, url: 'http://127.0.0.1/private' })).status, 400)
+  assert.equal((await prefetch({ ...request, choose: true })).status, 400)
+  assert.equal((await prefetch({ ...request, refresh: true })).status, 400)
+  assert.equal((await fetch(`${base}/api/wco/prefetch`)).status, 405)
   assert.equal((await post({ ...request, padding: 'x'.repeat(5000) })).status, 400)
   assert.equal((await fetch(`${base}/api/wco/resolve`)).status, 405)
   const braveStatus = await (await fetch(`${base}/api/wco/status`, { headers: { 'X-WCO-Browser': 'brave' } })).json()
@@ -106,6 +112,14 @@ try {
   }, ledger)
   await context.route('https://graphql.anilist.co/**', (route) => route.fulfill({ json: { data: { Media: null } } }))
   let providerStatus = { available: true, hiddenPreparation: true }
+  const prefetches = []
+  let observePrefetch = () => {}
+  await context.route('**/api/wco/prefetch', (route) => {
+    assert.equal(route.request().headers()['x-wco-browser'], 'brave')
+    prefetches.push(route.request().postDataJSON())
+    observePrefetch(route.request().postDataJSON())
+    return route.fulfill({ json: { ready: true, expiresAt: Date.now() + 90_000 } })
+  })
   await context.route('**/api/wco/status', (route) => {
     assert.equal(route.request().headers()['x-wco-browser'], 'brave')
     return route.fulfill({ json: providerStatus })
@@ -137,9 +151,19 @@ try {
   assert.deepEqual(await searchLinks(page), [{ title: 'Cowboy Bebop', url: series }])
   console.log('✓ Title matching preserves seasons/editions, prefers language, distinguishes movies and scopes search results')
   await page.goto(base)
+  const hovered = new Promise(resolve => { observePrefetch = resolve })
+  await page.locator('[data-watch-title="1"]').first().hover()
+  const hoveredEpisode = await hovered
+  assert.equal(hoveredEpisode.episode, 25)
+  assert.equal(hoveredEpisode.language, 'sub')
+  assert.equal(requests.length, 0)
+  await page.mouse.move(0, 0)
+  console.log('✓ Hovering a Watch action prepares its episode without opening or playing the cinema')
   await page.locator('.anime-tv-fab').click()
   await page.getByRole('button', { name: 'WCO Play in cinema', exact: true }).waitFor()
-  await page.waitForTimeout(250)
+  await page.getByRole('status').filter({ hasText: 'Episode 25 prepared' }).waitFor()
+  assert.equal(prefetches.at(-1).episode, 25)
+  assert.equal(prefetches.at(-1).language, 'sub')
   assert.equal(requests.length, 0, 'Opening the chooser alone does not start playback')
   assert.equal(await page.getByLabel('WCO playback URL', { exact: true }).isVisible(), false)
   await page.locator('.cinema-queue-row').click()
@@ -162,6 +186,13 @@ try {
   assert.ok(saved.pages['1:26:dub'])
   assert.ok(!JSON.stringify(saved).includes('private-fixture'))
   console.log('✓ Clicking a title discovers it without any URL, autoplays decoded media and saves stable pages with the actual language')
+  providerStatus = { ...providerStatus, hiddenPreparation: true }
+  await page.getByRole('status').filter({ hasText: 'Episode 26 prepared' }).waitFor()
+  assert.equal(prefetches.at(-1).episode, 26)
+  assert.equal(prefetches.at(-1).language, 'dub')
+  assert.equal(prefetches.at(-1).url, saved.pages['1:26:dub'])
+  assert.equal(await page.locator('video').evaluate((video) => video.paused), false)
+  console.log('✓ The chooser prepares without autoplay; the next episode prepares in the delivered language while playback continues')
 
   await page.locator('video').evaluate((video) => { video.pause(); video.dataset.recentFixture = 'buffered' })
   const previousTime = await page.locator('video').evaluate((video) => video.currentTime)

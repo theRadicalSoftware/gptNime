@@ -48,3 +48,5 @@ PATH="$HOME/.local/share/gptnime/runtime/usr/bin:$PATH" xvfb-run -a npm run test
 ```
 
 Startup now skips an extra WCO homepage load. Recently prepared sources can be reused for 90 seconds, with eight entries per browser, in memory only. This helps quick returns and version switches; new episodes still follow WCO’s own player preparation. Reload/Retry always requests fresh preparation. See [measured live results](WCO-PLAYBACK.md#hidden-preparation-and-startup-time--september-8-2026).
+
+Preparation can now begin before Play: while reading a title’s details or browsing the cinema, after hovering/focusing a Watch action for 700 ms, and in the final 60 seconds of the current episode. A matching click continues existing preparation; another selection takes priority. **Episode N prepared** indicates a source is ready and still within its short expiry. Background preparation is limited to one job, stops quietly at access/verification requirements, and never opens a desktop window. First clicks without enough preparation time still depend on WCO’s startup. See [live preparation measurements](WCO-PLAYBACK.md#preparing-before-play--september-8-2026).

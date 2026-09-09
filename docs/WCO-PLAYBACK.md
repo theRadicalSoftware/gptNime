@@ -74,6 +74,23 @@ The final viewer run decoded 853 × 480 video, duration 3480.16 seconds, advanci
 
 Session fixtures check the actual desktop window tree: the hidden provider window is absent, explicit Show makes it visible while retaining its cookie and URL, and completion restores hidden preparation. Fixtures also cover direct POST lookup, cache/refresh behavior, expiry, size limits, episode/version isolation and resuming the same buffered element. All headed tests, including explicit Show and native PiP, run inside an additional private display so testing cannot interrupt the user’s desktop.
 
+## Preparing before Play — September 8, 2026
+
+A fresh timing trace still spent 20.346 seconds preparing Sentenced to Be a Hero episode 1 Subbed, including roughly 11 seconds in WCO’s normal announcement/player stage. The recent-source cache did not help the first selection of a different episode. The connector now starts bounded preparation while a person reads title details, browses the cinema chooser, or hovers/focuses a Watch action. During WCO playback, it prepares the next episode in the last 60 seconds of playback time. It uses the normal provider flow and the existing private display; it does not shorten the provider’s controls or verification requirements.
+
+The new coordinator keeps a single provider job. Foreground clicks adopt matching work instead of restarting it, and preempt unrelated background work after cancellation cleanup. Background work has a 60-second limit and stops quietly on human verification or access requirements. It cannot interrupt a foreground request. A completed source retains the existing 90-second expiry. Leaving a hover or unmounting the previous episode does not cancel work that the new foreground request is adopting. Shared foreground viewers have independent cancellation signals.
+
+A separate live run used the real local API, ordinary Brave and an isolated fixture ledger, without provider/media interception:
+
+| Action | Background preparation | Wait after clicking to advancing playback |
+| --- | --- | --- |
+| Episode 1, prepared in the chooser | 23.685 seconds before the click | 3.283 seconds; resolver response at 71 ms |
+| Episode 2, prepared while episode 1 was playing near its end | 15.110 seconds before the click | 2.188 seconds; resolver response at 153 ms |
+
+Episode 1 decoded at 853 × 480 with duration 3480.16 seconds and advancing audio bytes. Episode 2 decoded at width 853 with duration 1514.985 seconds. Neither had a media error; browser runtime errors were absent and fixture progress stayed at zero. Measurements include native buffering, event/screenshot overhead and at least half a second of advancing playback. These are prepared starts, not a promise that an immediate cold click will start in two seconds. Clicking before preparation completes waits for the remaining work; expired, unprepared or provider-gated selections retain their ordinary preparation requirements.
+
+Ignored evidence: `output/research/prefetch-2026-09-08/optimized.json` (fresh baseline), `live-viewer.json`, `hidden-preparation.png`, `live-playback.png`, `next-prepared.png`, and `next-playing.png`. Screenshots show the subtle prepared indicator beneath the episode controls. Media URLs stayed in process memory; saved network records contain no query values. All testing used private virtual displays.
+
 ## Initial result before the delivery fix
 
 Cowboy Bebop episode 25 played successfully in WCO's normal player in headed Chrome. The same provider-issued video URL initially failed inside the actual gptNime cinema at `http://127.0.0.1:5190`. WCO's alternate Chromecast player also decoded the episode, but its issued media route initially failed from gptNime as well. The remaining sections preserve that earlier investigation; the resolved result above supersedes its implementation status.

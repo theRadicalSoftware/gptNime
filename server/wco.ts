@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
 import type { Page } from 'playwright'
 import { backgroundRunner, WcoBrowser, WcoBrowserError, wcoProfileDirectory } from './wcoBrowser'
+import { PreparationBusy, WcoPreparation } from './wcoPreparation'
 
 const chromePath = process.env.CHROME_PATH || '/usr/bin/google-chrome'
 const bravePath = process.env.BRAVE_PATH || '/usr/bin/brave-browser'
@@ -71,6 +72,9 @@ export class RecentSources {
     for (const [key, entry] of this.entries) if (entry.expires <= this.now()) this.forget(key)
     if (refresh) this.forget(key)
     return this.entries.get(key)?.result
+  }
+  expiresAt(result: PlaybackSource, episode: number, movie: boolean) {
+    return this.entries.get(this.key(result.pageUrl, episode, result.language, movie))?.expires || 0
   }
   put(result: PlaybackSource, episode: number, movie: boolean) {
     const key = this.key(result.pageUrl, episode, result.language, movie)
@@ -248,9 +252,10 @@ export async function resolveWco(request: ResolveRequest, signal: AbortSignal, s
   signal.throwIfAborted()
   let cache = recentSources.get(session)
   if (!cache) { cache = new RecentSources(); recentSources.set(session, cache) }
-  const pageUrl = resumes.get(requestKey(request))?.pageUrl || request.url
+  const remembered = resumes.get(requestKey(request))
+  const pageUrl = remembered?.pageUrl || request.url
   if (!request.choose && pageUrl) {
-    const cached = cache.get(pageUrl, request.episode, request.language, request.movie, request.refresh)
+    const cached = cache.get(pageUrl, request.episode, remembered?.language || request.language, request.movie, request.refresh)
     if (cached) return cached
   }
   for (let attempt = 0; ; attempt++) {
@@ -440,20 +445,20 @@ export function wcoPlugin(): Plugin {
     chrome: { path: chromePath, session: new WcoBrowser(chromePath), resumes: new Map<string, ResumePoint>() },
     brave: { path: bravePath, session: new WcoBrowser(bravePath, `${wcoProfileDirectory}-brave`), resumes: new Map<string, ResumePoint>() },
   }
-  let active: { controller: AbortController; phase: ProviderPhase; requestId: string | null } | null = null
-  const shutdown = async () => { active?.controller.abort(); await Promise.all(Object.values(providers).map(({ session }) => session.close())) }
+  const preparation = new WcoPreparation<ResolveResult>()
+  const shutdown = async () => { await preparation.close(); await Promise.all(Object.values(providers).map(({ session }) => session.close())) }
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     const path = req.url?.split('?')[0]
-    if (path !== '/api/wco/status' && path !== '/api/wco/resolve' && path !== '/api/wco/focus') { next(); return }
+    if (path !== '/api/wco/status' && path !== '/api/wco/resolve' && path !== '/api/wco/prefetch' && path !== '/api/wco/focus') { next(); return }
     if (!isLocal(req)) { json(res, 403, { error: 'The WCO connector is available only on this computer.' }); return }
     const browser = providerBrowser(req.headers['x-wco-browser'])
     if (!browser) { json(res, 400, { error: 'Choose a supported local playback browser.' }); return }
     const { session, resumes, path: browserPath } = providers[browser]
     if (path === '/api/wco/status' && req.method === 'GET') {
       const available = await access(browserPath).then(() => true, () => false)
-      json(res, 200, { available, browser, automatic: true, persistent: true, hiddenPreparation: !!await backgroundRunner(), busy: active !== null, phase: active?.phase || null, requestId: active?.requestId || null }); return
+      json(res, 200, { available, browser, automatic: true, persistent: true, hiddenPreparation: !!await backgroundRunner(), ...preparation.status }); return
     }
-    if (!['/api/wco/resolve', '/api/wco/focus'].includes(path) || req.method !== 'POST') { json(res, 405, { error: 'Method not allowed.' }); return }
+    if (!['/api/wco/resolve', '/api/wco/prefetch', '/api/wco/focus'].includes(path) || req.method !== 'POST') { json(res, 405, { error: 'Method not allowed.' }); return }
     if (req.headers.origin !== `http://${req.headers.host}` || !req.headers['content-type']?.startsWith('application/json')) {
       json(res, 403, { error: 'Start playback from the local gptNime cinema.' }); return
     }
@@ -463,26 +468,26 @@ export function wcoPlugin(): Plugin {
     }
     let request: ResolveRequest
     try { request = await readRequest(req) } catch { json(res, 400, { error: 'Use a valid title and episode selection.' }); return }
-    if (active) { json(res, 409, { error: 'Another episode is being prepared. Cancel it or wait for it to finish.' }); return }
+    const background = path === '/api/wco/prefetch'
+    if (background && (request.choose || request.refresh || !await backgroundRunner())) { json(res, 400, { error: 'Background preparation is unavailable for this selection.' }); return }
     const controller = new AbortController()
     const rawRequestId = req.headers['x-wco-request']
-    const job = { controller, phase: 'opening' as ProviderPhase, requestId: typeof rawRequestId === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(rawRequestId) ? rawRequestId : null }
-    active = job
-    const timer = setTimeout(() => controller.abort(), deadlineMs + verificationMs + 15_000)
+    const requestId = typeof rawRequestId === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(rawRequestId) ? rawRequestId : null
     const cancel = () => controller.abort()
-    res.once('close', cancel)
+    if (!background) res.once('close', cancel)
     try {
-      const result = await resolveWco(request, controller.signal, session, resumes, (phase) => { job.phase = phase })
-      json(res, 200, result)
+      const key = `${browser}:${requestKey(request)}`
+      const work = (signal: AbortSignal, report: ReportPhase) => resolveWco(request, signal, session, resumes, report)
+      const result = await (background ? preparation.prefetch(key, work) : preparation.resolve(key, work, controller.signal, requestId, request.refresh))
+      json(res, 200, background ? { ready: result.kind === 'source', expiresAt: result.kind === 'source' ? recentSources.get(session)?.expiresAt(result, request.episode, request.movie) || 0 : 0 } : result)
     } catch (error) {
+      if (error instanceof PreparationBusy) { json(res, 409, { error: 'Another episode is being prepared. Cancel it or wait for it to finish.' }); return }
       // Playwright errors may contain signed URLs. Only our own messages reach UI.
       const message = error instanceof PlaybackError || error instanceof WcoBrowserError
         ? error.message : 'The WCO connection was interrupted. Retry playback to reconnect to your saved session.'
       json(res, 502, { error: message, code: error instanceof PlaybackError ? error.code : undefined })
     } finally {
-      clearTimeout(timer)
       res.removeListener('close', cancel)
-      if (active === job) active = null
     }
   }
   return {
