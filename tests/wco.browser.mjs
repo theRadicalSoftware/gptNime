@@ -8,7 +8,7 @@ const server = await createServer({ server: { host: '127.0.0.1', port: 5198, str
 await server.listen()
 let browser
 try {
-  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage, providerBrowser } = await server.ssrLoadModule('/server/wco.ts')
+  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage, providerBrowser, RecentSources } = await server.ssrLoadModule('/server/wco.ts')
   assert.equal(providerBrowser(undefined), 'chrome')
   assert.equal(providerBrowser('brave'), 'brave')
   assert.equal(providerBrowser('/usr/bin/untrusted'), null)
@@ -16,6 +16,24 @@ try {
   assert.equal(providerAccessMessage('Get PREMIUM Now! Close announcement. Play Video'), null)
   const series = 'https://www.wco.tv/anime/cowboy-bebop/?season=all'
   const episode = 'https://www.wco.tv/cowboy-bebop-episode-25-english-dubbed-2'
+  let clock = 0
+  const recent = new RecentSources(() => clock)
+  const prepared = { kind: 'source', source: 'https://fixture.wcostream.com/getvid?evid=fixture', pageUrl: episode, title: 'Cowboy Bebop Episode 25 English Dubbed', language: 'dub', notice: '', previousPage: null, nextPage: null }
+  recent.put(prepared, 25, false)
+  assert.equal(recent.get(episode, 25, 'dub', false), prepared)
+  assert.equal(recent.get(episode, 25, 'sub', false), undefined)
+  assert.equal(recent.get(episode, 26, 'dub', false), undefined)
+  assert.equal(recent.get(episode, 25, 'dub', true), undefined)
+  assert.equal(new RecentSources().get(episode, 25, 'dub', false), undefined, 'Separate browser caches cannot share a signed source')
+  clock = 90_000
+  assert.equal(recent.get(episode, 25, 'dub', false), undefined)
+  recent.put(prepared, 25, false)
+  assert.equal(recent.get(episode, 25, 'dub', false, true), undefined)
+  assert.equal(recent.get(episode, 25, 'dub', false), undefined)
+  for (let i = 1; i <= 9; i++) recent.put(prepared, i, false)
+  assert.equal(recent.get(episode, 1, 'dub', false), undefined)
+  assert.equal(recent.get(episode, 9, 'dub', false), prepared)
+  console.log('✓ Recent sources expire, stay bounded, distinguish version/episode/movie and are invalidated by explicit refresh')
   assert.equal(episodePage(series), series)
   assert.equal(episodePage(episode), episode)
   for (const invalid of ['http://www.wco.tv/anime/test', 'https://www.wco.tv.evil.test/episode', 'https://user@www.wco.tv/episode', 'https://127.0.0.1/episode', 'https://www.wco.tv/inc/embed/index.php', 'https://www.wco.tv/episode?token=secret', 'https://www.wco.tv/wp-admin/admin.php']) {
@@ -66,6 +84,7 @@ try {
   assert.equal((await post(request, { Host: 'unrelated.example', Origin: 'http://unrelated.example' })).status, 403)
   assert.equal((await post({ ...request, url: 'http://127.0.0.1/private' })).status, 400)
   assert.equal((await post({ ...request, episode: 0 })).status, 400)
+  assert.equal((await post({ ...request, refresh: 'yes' })).status, 400)
   assert.equal((await post({ ...request, padding: 'x'.repeat(5000) })).status, 400)
   assert.equal((await fetch(`${base}/api/wco/resolve`)).status, 405)
   const braveStatus = await (await fetch(`${base}/api/wco/status`, { headers: { 'X-WCO-Browser': 'brave' } })).json()
@@ -86,7 +105,7 @@ try {
     if (!localStorage.getItem('gptnime-tracker-library-v1')) localStorage.setItem('gptnime-tracker-library-v1', JSON.stringify(data))
   }, ledger)
   await context.route('https://graphql.anilist.co/**', (route) => route.fulfill({ json: { data: { Media: null } } }))
-  let providerStatus = { available: true }
+  let providerStatus = { available: true, hiddenPreparation: true }
   await context.route('**/api/wco/status', (route) => {
     assert.equal(route.request().headers()['x-wco-browser'], 'brave')
     return route.fulfill({ json: providerStatus })
@@ -143,6 +162,17 @@ try {
   assert.ok(saved.pages['1:26:dub'])
   assert.ok(!JSON.stringify(saved).includes('private-fixture'))
   console.log('✓ Clicking a title discovers it without any URL, autoplays decoded media and saves stable pages with the actual language')
+
+  await page.locator('video').evaluate((video) => { video.pause(); video.dataset.recentFixture = 'buffered' })
+  const previousTime = await page.locator('video').evaluate((video) => video.currentTime)
+  await page.locator('.cinema-queue-row').click()
+  await page.waitForTimeout(150)
+  await pending.fulfill({ json: { kind: 'source', source, pageUrl: episode, language: 'dub', title: 'Cowboy Bebop: Episode 25 English Dubbed' } })
+  await page.waitForFunction(() => document.querySelector('video')?.paused === false)
+  assert.equal(await page.locator('video').getAttribute('data-recent-fixture'), 'buffered')
+  assert.ok(await page.locator('video').evaluate((video) => video.currentTime) >= previousTime)
+  assert.equal(await page.locator('.cinema-loading').count(), 0)
+  console.log('✓ Re-selecting a cached episode resumes the same buffered video without waiting for another canplay event')
 
   const version = page.getByRole('group', { name: 'Episode version', exact: true })
   assert.equal(await page.locator('.cinema-controls').getByRole('group', { name: 'Episode version' }).count(), 1)
@@ -226,6 +256,7 @@ try {
   await page.getByRole('alert').filter({ hasText: 'WCO’s video could not load in this browser' }).waitFor()
   await page.getByRole('button', { name: 'Retry episode', exact: true }).click()
   await page.waitForTimeout(150)
+  assert.equal(requests.at(-1).refresh, true)
   assert.equal(requests.at(-1).episode, 25)
   assert.equal(requests.at(-1).url, episode)
   await pending.fulfill({ json: { kind: 'source', source: `${source}-retry`, pageUrl: episode, language: 'dub', title: 'Cowboy Bebop: Episode 25 English Dubbed' } })

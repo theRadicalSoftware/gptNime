@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer as httpServer } from 'node:http'
 import { createServer } from 'vite'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
-const vite = await createServer({ server: { middlewareMode: true } })
+const vite = await createServer({ server: { middlewareMode: true, hmr: false } })
 const fixture = httpServer((req, res) => {
   if (req.url === '/set') res.setHeader('Set-Cookie', 'gptnime-test-session=retained; Max-Age=3600; HttpOnly; SameSite=Lax')
   res.setHeader('Content-Type', 'text/html')
@@ -16,12 +18,18 @@ const base = `http://127.0.0.1:${fixture.address().port}`
 const profile = await mkdtemp(join(tmpdir(), 'gptnime-session-test-'))
 let session
 try {
-  const { WcoBrowser } = await vite.ssrLoadModule('/server/wcoBrowser.ts')
+  const { WcoBrowser, backgroundRunner } = await vite.ssrLoadModule('/server/wcoBrowser.ts')
   const { PreparationBudget, waitForProvider, resolveWco } = await vite.ssrLoadModule('/server/wco.ts')
   const executable = process.env.CHROME_PATH || '/usr/bin/google-chrome'
   session = new WcoBrowser(executable, profile)
   const page = await session.getPage()
+  const desktopWindows = async () => (await promisify(execFile)('xwininfo', ['-root', '-tree'])).stdout
+  const hidden = !!await backgroundRunner()
   await page.goto(`${base}/set`)
+  if (hidden) {
+    assert.doesNotMatch(await desktopWindows(), /Session fixture/)
+    console.log('✓ The preparation window is absent from the desktop window tree')
+  }
   assert.equal((await stat(profile)).mode & 0o777, 0o700)
   const browser = page.context().browser()
   assert.equal(await session.getPage(), page)
@@ -34,7 +42,7 @@ try {
 
   await Promise.all([session.close(), session.close()])
   session = new WcoBrowser(executable, profile)
-  const reopened = await session.getPage()
+  let reopened = await session.getPage()
   await reopened.goto(base)
   assert.equal((await reopened.context().cookies(base)).find((cookie) => cookie.name === 'gptnime-test-session')?.value, 'retained')
   console.log('✓ A private dedicated profile preserves its own session across Chrome restarts')
@@ -64,17 +72,45 @@ try {
   await assert.rejects(cancellation, { name: 'AbortError' })
   assert.equal(await session.show(), true)
   console.log('✓ Verification expiry preserves the page; cancellation remains interruptible and the window can be shown')
+  if (hidden) {
+    const visible = await session.getPage()
+    assert.equal(reopened.isClosed(), true)
+    assert.match(await desktopWindows(), /Session fixture/)
+    assert.equal(visible.url(), `${base}/`)
+    assert.equal((await visible.context().cookies(base)).find((cookie) => cookie.name === 'gptnime-test-session')?.value, 'retained')
+    await session.park(visible)
+    assert.equal(visible.isClosed(), true)
+    reopened = await session.getPage()
+    await reopened.goto(base)
+    assert.doesNotMatch(await desktopWindows(), /Session fixture/)
+    assert.equal((await reopened.context().cookies(base)).find((cookie) => cookie.name === 'gptnime-test-session')?.value, 'retained')
+    console.log('✓ Explicit Show transfers the same profile to the desktop; completion returns future work to a private display')
+  }
   // Full resolver contract with intercepted provider fixtures, including a manual
   // login tab. This performs no real provider login, CAPTCHA or subscription.
   const episodeUrl = 'https://www.wco.tv/session-fixture-episode-755-english-subbed'
   const mediaUrl = 'https://fixture.wcostream.com/getvid?evid=fixture'
   const media = await readFile('tests/fixtures/cinema-test.webm')
   const context = reopened.context()
+  let episodeLoads = 0
+  let searches = 0
   await context.route('https://www.wco.tv/**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    assert.notEqual(path, '/', 'Lookup should not load the homepage first')
+    if (path === '/search') {
+      searches++
+      assert.equal(route.request().method(), 'POST')
+      const fields = new URLSearchParams(route.request().postData())
+      assert.equal(fields.get('catara'), 'Session Fixture episode 755')
+      assert.equal(fields.get('konuara'), 'episodes')
+      await route.fulfill({ contentType: 'text/html', body: `<title>Search</title><div id="sidebar_right2"><ul class="ul-episodes"><li><a href="${episodeUrl}">Session Fixture Episode 755 English Subbed</a></li></ul></div>` })
+      return
+    }
     if (route.request().url().endsWith('/fixture-login')) {
       await route.fulfill({ contentType: 'text/html', headers: { 'Set-Cookie': 'gptnime-test-login=accepted; Path=/; Secure; SameSite=Lax' }, body: '<title>Simulated account session</title><p>Local test fixture only</p>' })
       return
     }
+    episodeLoads++
     const loggedIn = (await route.request().headerValue('cookie') || '').includes('gptnime-test-login=accepted')
     await route.fulfill({ contentType: 'text/html', body: `<title>Session Fixture Episode 755 English Subbed</title>${loggedIn ? '<iframe src="https://embed.wcostream.com/fixture-player"></iframe>' : '<h1>This Video Is for Premium Users</h1><a target="_blank" href="https://www.wco.tv/fixture-login">Fixture sign in</a>'}` })
   })
@@ -95,13 +131,25 @@ try {
   assert.equal(result.kind, 'source')
   assert.equal(result.source, mediaUrl)
   assert.equal(reopened.url(), 'about:blank')
+  assert.equal(episodeLoads, 2)
+  assert.deepEqual(await resolveWco(request, new AbortController().signal, session, checkpoints, () => {}), result)
+  assert.equal(episodeLoads, 2, 'Returning to a recent episode avoids another provider preparation')
+  await resolveWco({ ...request, refresh: true }, new AbortController().signal, session, checkpoints, () => {})
+  assert.equal(episodeLoads, 3, 'Reload bypasses the recent source')
+  const automatic = { ...request, url: undefined }
+  assert.equal((await resolveWco(automatic, new AbortController().signal, session, checkpoints, () => {})).kind, 'source')
+  assert.equal(searches, 1)
+  assert.equal(episodeLoads, 4)
+  await resolveWco(automatic, new AbortController().signal, session, checkpoints, () => {})
+  assert.equal(searches, 1)
+  assert.equal(episodeLoads, 4)
+  console.log('✓ Direct normal search skips the homepage; recent sources avoid repeated preparation and Reload obtains a fresh source')
   session.show = show
   await login.close()
   await context.unrouteAll({ behavior: 'wait' })
   console.log('✓ Preparation never requests focus; access recovery reloads the episode with the accepted fixture session')
   await session.park(reopened)
   assert.equal(reopened.url(), 'about:blank')
-  assert.equal(await session.show(), true)
 } finally {
   await session?.close()
   await vite.close()

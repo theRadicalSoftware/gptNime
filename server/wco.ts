@@ -2,7 +2,7 @@ import { access } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
 import type { Page } from 'playwright'
-import { WcoBrowser, WcoBrowserError, wcoProfileDirectory } from './wcoBrowser'
+import { backgroundRunner, WcoBrowser, WcoBrowserError, wcoProfileDirectory } from './wcoBrowser'
 
 const chromePath = process.env.CHROME_PATH || '/usr/bin/google-chrome'
 const bravePath = process.env.BRAVE_PATH || '/usr/bin/brave-browser'
@@ -45,8 +45,46 @@ export function videoSource(value: string): boolean {
   } catch { return false }
 }
 
-type ResolveRequest = { url?: string; titles: string[]; episode: number; language: 'sub' | 'dub'; movie: boolean; choose: boolean }
+type ResolveRequest = { url?: string; titles: string[]; episode: number; language: 'sub' | 'dub'; movie: boolean; choose: boolean; refresh?: boolean }
 type Link = { url: string; title: string }
+type PlaybackSource = {
+  kind: 'source'; source: string; pageUrl: string; seriesPage?: string; title: string; language: 'sub' | 'dub'; notice: string
+  previousPage: string | null; nextPage: string | null
+}
+type ResolveResult = PlaybackSource | { kind: 'choices'; message: string; choices: (Link & { language?: 'sub' | 'dub' })[] }
+
+// Briefly reuse an already prepared episode when returning to it or switching
+// versions. These signed sources stay in server memory and never cross browsers.
+export class RecentSources {
+  private entries = new Map<string, { result: PlaybackSource; expires: number; timer: ReturnType<typeof setTimeout> }>()
+  constructor(private now: () => number = Date.now) {}
+  private forget(key: string) {
+    clearTimeout(this.entries.get(key)?.timer)
+    this.entries.delete(key)
+  }
+  private key(pageUrl: string, episode: number, language: string, movie: boolean) {
+    const url = new URL(pageUrl)
+    return JSON.stringify([url.pathname.replace(/\/$/, ''), episode, language, movie])
+  }
+  get(pageUrl: string, episode: number, language: string, movie: boolean, refresh = false) {
+    const key = this.key(pageUrl, episode, language, movie)
+    for (const [key, entry] of this.entries) if (entry.expires <= this.now()) this.forget(key)
+    if (refresh) this.forget(key)
+    return this.entries.get(key)?.result
+  }
+  put(result: PlaybackSource, episode: number, movie: boolean) {
+    const key = this.key(result.pageUrl, episode, result.language, movie)
+    this.forget(key)
+    const timer = setTimeout(() => this.entries.delete(key), 90_000)
+    timer.unref()
+    this.entries.set(key, { result, expires: this.now() + 90_000, timer })
+    if (this.entries.size > 8) this.forget(this.entries.keys().next().value!)
+  }
+}
+const recentSources = new WeakMap<WcoBrowser, RecentSources>()
+function requestKey(request: ResolveRequest) {
+  return JSON.stringify({ url: request.url, titles: request.titles, episode: request.episode, language: request.language, movie: request.movie, choose: request.choose })
+}
 
 export function titleKey(title: string, movie = false): string {
   let value = title.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
@@ -141,15 +179,24 @@ async function discover(page: Page, request: ResolveRequest, budget: Preparation
   const queries = [...new Set([...request.titles.slice(0, 2), request.titles[0]?.split(':')[0], ...request.titles.slice(2)].filter(Boolean))].slice(0, 3)
   let candidates: Link[] = []
   report('searching')
-  await page.goto('https://www.wco.tv/', { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
   const search = async (query: string, scope: 'episodes' | 'series') => {
     await waitForProvider(page, budget, signal, report, 'searching')
     if (Date.now() >= budget.end) throw new PlaybackError('WCO title lookup took too long. Retry playback to continue with your saved session.')
-    await page.locator('input[name="catara"]').fill(query, { timeout: 10_000 })
-    await page.locator('select[name="konuara"]').selectOption(scope)
+    // Submit the public search form directly, avoiding an extra homepage load.
+    // Normal top-level navigation retains the dedicated browser's own session.
+    await page.goto('about:blank')
+    await page.evaluate(({ query, scope }) => {
+      const form = document.createElement('form')
+      form.method = 'POST'; form.action = 'https://www.wco.tv/search'
+      for (const [name, value] of Object.entries({ catara: query, konuara: scope })) {
+        const input = document.createElement('input')
+        input.name = name; input.value = value; form.append(input)
+      }
+      document.body.append(form)
+    }, { query, scope })
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {}),
-      page.locator('input[name="catara"]').press('Enter'),
+      page.locator('form').evaluate((form: HTMLFormElement) => form.submit()),
     ])
     await waitForProvider(page, budget, signal, report, 'searching')
     if (new URL(page.url()).hostname !== 'www.wco.tv' || new URL(page.url()).pathname !== '/search') throw new PlaybackError('WCO search is unavailable right now. Retry playback shortly.')
@@ -197,16 +244,43 @@ export async function episodeLinks(page: Page, catalogue: boolean): Promise<Link
   })))
 }
 
-export async function resolveWco(request: ResolveRequest, signal: AbortSignal, session: WcoBrowser, resumes: Map<string, ResumePoint>, report: ReportPhase) {
+export async function resolveWco(request: ResolveRequest, signal: AbortSignal, session: WcoBrowser, resumes: Map<string, ResumePoint>, report: ReportPhase): Promise<ResolveResult> {
+  signal.throwIfAborted()
+  let cache = recentSources.get(session)
+  if (!cache) { cache = new RecentSources(); recentSources.set(session, cache) }
+  const pageUrl = resumes.get(requestKey(request))?.pageUrl || request.url
+  if (!request.choose && pageUrl) {
+    const cached = cache.get(pageUrl, request.episode, request.language, request.movie, request.refresh)
+    if (cached) return cached
+  }
+  for (let attempt = 0; ; attempt++) {
+    const revision = session.revision
+    try {
+      const result = await prepareWco(request, signal, session, resumes, report)
+      signal.throwIfAborted()
+      if (result.kind === 'source') cache.put(result, request.episode, request.movie)
+      return result
+    }
+    catch (error) {
+      if (signal.aborted || revision === session.revision || attempt >= 1) throw error
+      // The person explicitly opened the hidden session. Continue on its desktop
+      // browser after the profile is handed over, keeping this playback request.
+      await session.getPage()
+    }
+  }
+}
+
+async function prepareWco(request: ResolveRequest, signal: AbortSignal, session: WcoBrowser, resumes: Map<string, ResumePoint>, report: ReportPhase): Promise<ResolveResult> {
   if (request.movie && request.url?.includes('/anime/')) throw new PlaybackError('Choose the movie result instead of a TV series.')
   const page = await session.getPage()
+  const revision = session.revision
   signal.throwIfAborted()
   session.setPreparing(true)
   // Cancellation releases the work tab promptly; Chrome's profile survives it.
   let cancellation: Promise<void> | undefined
   const abort = () => { cancellation = session.cancel(page) }
   signal.addEventListener('abort', abort, { once: true })
-  const key = JSON.stringify(request)
+  const key = requestKey(request)
   const remembered = request.choose ? undefined : resumes.get(key)
   const budget = new PreparationBudget()
   try {
@@ -321,7 +395,7 @@ export async function resolveWco(request: ResolveRequest, signal: AbortSignal, s
     const checkpoint = resumes.get(key)
     // Reload failed player initialization on Retry, while preserving an unfinished
     // human check so an accepted verification is not discarded by navigation.
-    if (checkpoint && !(error instanceof PlaybackError && error.code === 'verification')) resumes.set(key, { ...checkpoint, reload: true })
+    if (checkpoint && revision === session.revision && !(error instanceof PlaybackError && error.code === 'verification')) resumes.set(key, { ...checkpoint, reload: true })
     throw error
   } finally {
     signal.removeEventListener('abort', abort)
@@ -353,10 +427,10 @@ async function readRequest(req: IncomingMessage): Promise<ResolveRequest> {
   const raw = JSON.parse(body)
   const url = episodePage(raw?.url)
   const titles = Array.isArray(raw?.titles) ? raw.titles : []
-  if ((raw?.url && !url) || (!url && !titles.length) || titles.length > 8 || titles.some((title: unknown) => typeof title !== 'string' || title.trim().length < 2 || title.length > 200) || !Number.isInteger(raw?.episode) || raw.episode < 1 || raw.episode > 100_000 || !['sub', 'dub'].includes(raw.language) || typeof raw.movie !== 'boolean' || (raw.choose !== undefined && typeof raw.choose !== 'boolean')) {
+  if ((raw?.url && !url) || (!url && !titles.length) || titles.length > 8 || titles.some((title: unknown) => typeof title !== 'string' || title.trim().length < 2 || title.length > 200) || !Number.isInteger(raw?.episode) || raw.episode < 1 || raw.episode > 100_000 || !['sub', 'dub'].includes(raw.language) || typeof raw.movie !== 'boolean' || (raw.choose !== undefined && typeof raw.choose !== 'boolean') || (raw.refresh !== undefined && typeof raw.refresh !== 'boolean')) {
     throw new Error('Use a valid title and episode selection.')
   }
-  return { url: url || undefined, titles: titles.map((title: string) => title.trim()), episode: raw.episode, language: raw.language, movie: raw.movie, choose: raw.choose === true }
+  return { url: url || undefined, titles: titles.map((title: string) => title.trim()), episode: raw.episode, language: raw.language, movie: raw.movie, choose: raw.choose === true, refresh: raw.refresh === true }
 }
 
 export function wcoPlugin(): Plugin {
@@ -377,7 +451,7 @@ export function wcoPlugin(): Plugin {
     const { session, resumes, path: browserPath } = providers[browser]
     if (path === '/api/wco/status' && req.method === 'GET') {
       const available = await access(browserPath).then(() => true, () => false)
-      json(res, 200, { available, browser, automatic: true, persistent: true, busy: active !== null, phase: active?.phase || null, requestId: active?.requestId || null }); return
+      json(res, 200, { available, browser, automatic: true, persistent: true, hiddenPreparation: !!await backgroundRunner(), busy: active !== null, phase: active?.phase || null, requestId: active?.requestId || null }); return
     }
     if (!['/api/wco/resolve', '/api/wco/focus'].includes(path) || req.method !== 'POST') { json(res, 405, { error: 'Method not allowed.' }); return }
     if (req.headers.origin !== `http://${req.headers.host}` || !req.headers['content-type']?.startsWith('application/json')) {

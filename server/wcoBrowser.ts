@@ -1,13 +1,20 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdir, chmod } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { access, mkdir, chmod } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium, type Browser, type Page } from 'playwright'
 
 export const wcoProfileDirectory = join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'gptnime', 'wco-browser')
 export class WcoBrowserError extends Error {}
+
+export async function backgroundRunner(): Promise<string | undefined> {
+  for (const path of [process.env.GPTNIME_XVFB_RUN, join(homedir(), '.local/share/gptnime/runtime/usr/bin/xvfb-run'), '/usr/bin/xvfb-run']) {
+    if (path && await access(path, constants.X_OK).then(() => true, () => false)) return path
+  }
+}
 
 async function localPort(): Promise<number> {
   const socket = createServer()
@@ -28,6 +35,10 @@ export class WcoBrowser {
   private closing = false
   private stopping: Promise<void> | null = null
   private preparing = false
+  private visible = false
+  private hiddenDisplay = false
+  private switching: Promise<void> | null = null
+  revision = 0
 
   constructor(private executable: string, private profile = wcoProfileDirectory) {}
 
@@ -35,10 +46,20 @@ export class WcoBrowser {
     await mkdir(this.profile, { recursive: true, mode: 0o700 })
     await chmod(this.profile, 0o700)
     const port = await localPort()
-    const child = spawn(this.executable, [
+    const runner = this.visible ? undefined : await backgroundRunner()
+    this.hiddenDisplay = !!runner
+    const args = [
       `--user-data-dir=${this.profile}`, '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${port}`,
-      '--no-first-run', '--no-default-browser-check', '--mute-audio', '--window-size=1100,860', '--no-startup-window', '--start-minimized',
-    ], { stdio: 'ignore' })
+      '--no-first-run', '--no-default-browser-check', '--mute-audio', '--window-size=1100,860',
+      ...(runner ? ['--ozone-platform=x11', '--new-window', 'about:blank'] : ['--no-startup-window', '--start-minimized']),
+    ]
+    const env = { ...process.env }
+    if (runner) { env.PATH = `${dirname(runner)}:${env.PATH || ''}`; delete env.WAYLAND_DISPLAY }
+    // xvfb-run gives this ordinary browser a private, authenticated X display.
+    // Its windows cannot map onto the user's desktop. Browser identity stays intact.
+    const child = runner
+      ? spawn(runner, ['-a', '-s', '-screen 0 1100x860x24 -nolisten tcp', this.executable, ...args], { stdio: 'ignore', env })
+      : spawn(this.executable, args, { stdio: 'ignore', env })
     this.process = child
     let failed = false
     child.once('error', () => { failed = true })
@@ -74,6 +95,11 @@ export class WcoBrowser {
   }
 
   async getPage(): Promise<Page> {
+    await this.switching
+    return this.ensurePage()
+  }
+
+  private async ensurePage(): Promise<Page> {
     if (this.closing) throw new Error('The WCO connector is shutting down.')
     if (!this.browser?.isConnected()) {
       this.starting ??= this.start().finally(() => { this.starting = null })
@@ -82,14 +108,29 @@ export class WcoBrowser {
     if (!this.page || this.page.isClosed()) {
       const context = this.browser!.contexts()[0]
       this.page = context.pages().find((page) => page.url() === 'about:blank') || await this.backgroundPage()
-      await this.windowState(this.page, 'minimized')
+      if (!this.hiddenDisplay && !this.visible) await this.windowState(this.page, 'minimized')
       this.page.on('popup', (popup) => { if (this.preparing) void popup.close().catch(() => {}) })
     }
     return this.page
   }
 
   async show(): Promise<boolean> {
+    if (this.switching) { await this.switching; return true }
     if (!this.page || this.page.isClosed()) return false
+    if (this.hiddenDisplay) {
+      const url = this.page.url()
+      this.revision++
+      this.switching = (async () => {
+        await this.stopBrowser()
+        this.visible = true
+        const page = await this.ensurePage()
+        if (url !== 'about:blank') await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+        await this.windowState(page, 'normal')
+        await page.bringToFront()
+      })().finally(() => { this.switching = null })
+      await this.switching
+      return true
+    }
     await this.windowState(this.page, 'normal')
     await this.page.bringToFront()
     return true
@@ -105,7 +146,8 @@ export class WcoBrowser {
     if (page.isClosed()) return
     // Release provider media after handing it to the cinema, preserving cookies.
     await page.goto('about:blank', { timeout: 5000 }).catch(() => {})
-    await this.windowState(page, 'minimized')
+    if (this.visible) { await this.stopBrowser(); this.visible = false }
+    else if (!this.hiddenDisplay) await this.windowState(page, 'minimized')
   }
 
   async cancel(page: Page) {
@@ -136,6 +178,11 @@ export class WcoBrowser {
 
   private async shutdown() {
     this.closing = true
+    await this.switching?.catch(() => {})
+    await this.stopBrowser()
+  }
+
+  private async stopBrowser() {
     await this.starting?.catch(() => {})
     // A CDP connection can disconnect without terminating ordinary Chrome.
     // Ask this dedicated browser to exit cleanly before releasing its process.

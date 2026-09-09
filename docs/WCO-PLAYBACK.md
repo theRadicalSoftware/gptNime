@@ -51,6 +51,29 @@ A full live test started from an isolated Brave library with no saved WCO URLs. 
 
 Build, lint, the WCO browser suite, session regressions and the general headed cinema suite passed. Browser tests cover the selected-browser header on every provider operation, actual media failure followed by same-episode retry, and absence of automatic focus calls. Ignored evidence is in `output/research/hero-2026-09-08/`: `02-brave-automatic-playback.png`, `comparison-proof.json`, `automatic-proof.json`, and `final-network.json`. Provider URLs remain only in memory; saved network records omit query values.
 
+## Hidden preparation and startup time — September 8, 2026
+
+Minimized/background windows could still appear briefly on the desktop. When Xvfb is available, the dedicated ordinary browser now runs on a private authenticated virtual display with TCP disabled. Only an explicit **Show WCO window** transfers the same saved profile to the desktop for human interaction. A pending resolver survives that handoff; successful preparation closes the explicitly shown browser and returns future preparation to the private display. The local workstation runtime is enabled, and `/api/wco/status` reports `hiddenPreparation: true`.
+
+Automatic discovery submits WCO’s public search form directly, skipping an extra homepage load. A bounded cache holds up to eight already prepared sources per browser for at most 90 seconds in server memory. Sources are scoped by stable episode page, episode number, delivered language and movie flag. No signed source is saved to app storage or a cache file. Explicit Reload/Retry invalidates a recent source. Reselecting a source already buffered in the cinema resumes the existing video element, preserving time and avoiding a second load event.
+
+Live measurements used ordinary Brave, an isolated fixture ledger and **Sentenced to Be a Hero episode 1, English Subbed**, without intercepting provider or media traffic:
+
+| Measurement | Observed time |
+| --- | --- |
+| Previous resolver, fresh session with homepage lookup | 24.262 seconds to source ready |
+| Hidden resolver with direct search, fresh session | 21.039 seconds to source ready |
+| Fresh preparation from its remembered episode page | 15.716 seconds to source ready |
+| Immediate server-side reuse of that prepared source | 3 milliseconds |
+| Separate complete gptNime viewer run, first selection | 30.563 seconds to advancing playback; API response at 29.311 seconds |
+| Reselecting that episode in the same viewer | 130 milliseconds to resumed playback; API response at 99 milliseconds |
+
+These are individual observations, not a consistent percentage improvement or guaranteed latency. WCO’s normal announcement/player stage still took around 11 seconds in the timed traces; provider/network response time varied between runs. New episodes retain that preparation. A 90-second recent-source hit is a quick-return optimization, not advance preparation of every episode.
+
+The final viewer run decoded 853 × 480 video, duration 3480.16 seconds, advancing video time and decoded audio bytes, with no media or browser runtime errors. The test viewer was muted and did not change system audio. Fixture progress remained zero. Screenshots and sanitized timings are under ignored `output/research/startup-2026-09-08/`: `baseline.json`, `optimized.json`, `repeat.json`, `live-viewer.json`, `hidden-preparation.png`, and `live-playback.png`. No query values are recorded in those artifacts.
+
+Session fixtures check the actual desktop window tree: the hidden provider window is absent, explicit Show makes it visible while retaining its cookie and URL, and completion restores hidden preparation. Fixtures also cover direct POST lookup, cache/refresh behavior, expiry, size limits, episode/version isolation and resuming the same buffered element. All headed tests, including explicit Show and native PiP, run inside an additional private display so testing cannot interrupt the user’s desktop.
+
 ## Initial result before the delivery fix
 
 Cowboy Bebop episode 25 played successfully in WCO's normal player in headed Chrome. The same provider-issued video URL initially failed inside the actual gptNime cinema at `http://127.0.0.1:5190`. WCO's alternate Chromecast player also decoded the episode, but its issued media route initially failed from gptNime as well. The remaining sections preserve that earlier investigation; the resolved result above supersedes its implementation status.
