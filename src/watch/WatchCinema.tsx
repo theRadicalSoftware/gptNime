@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Info, Link2, LoaderCircle, Maximize2, Minimize2, MonitorUp, Play, RotateCcw, Search, Subtitles, X } from 'lucide-react'
 import type { Language, WatchRequest, WatchTitle } from './watchState'
 import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, readWatchState, recentWatch, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
-import { episodePreparation, prefetchEpisode, retainPlayback, scheduleEpisodePreparation } from './watchPreparation'
+import { episodePreparation, prefetchEpisode, prefetchSelection, retainPlayback, scheduleEpisodePreparation } from './watchPreparation'
 import './WatchCinema.css'
 
 type Props = {
@@ -13,7 +13,8 @@ type Props = {
   onDetails: (id: string) => void
   onClose: () => void
 }
-type Preparation = { url?: string; language?: Language; search?: boolean; choose?: boolean; refresh?: boolean }
+type PlaybackPosition = { time: number; paused: boolean; rate: number; volume: number; muted: boolean }
+type Preparation = { url?: string; language?: Language; search?: boolean; choose?: boolean; refresh?: boolean; continuation?: PlaybackPosition }
 type Match = { url: string; title: string; language?: Language }
 type Selection = { id: string; episode: number; intent: number; preparation?: Preparation }
 type Layout = 'cinema' | 'dock' | 'window'
@@ -219,7 +220,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
   )
 }
 
-type Source = { url: string; name: string; key: string; local: boolean; autoplay?: boolean; provider?: 'wco'; language?: Language; playbackId?: string; cached?: boolean }
+type Source = { url: string; name: string; key: string; local: boolean; autoplay?: boolean; provider?: 'wco'; language?: Language; playbackId?: string; cached?: boolean; continuation?: PlaybackPosition }
 
 function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpisode, onDetails, onRevealSource }: {
   entry: WatchTitle; episode: number; intent: number; preparation?: Preparation; onComplete: Props['onComplete']; onEpisode: (episode: number, preparation?: Preparation) => void; onDetails: () => void; onRevealSource: () => void
@@ -251,6 +252,9 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const [matches, setMatches] = useState<Match[]>([])
   const autoplayAttempted = useRef(false)
   const cachedRetry = useRef('')
+  const versionPosition = useRef<PlaybackPosition | null>(null)
+  const [versionLeases, setVersionLeases] = useState<Partial<Record<Language, string>>>({})
+  const versionAttempted = useRef(new Set<Language>())
   const resolutionRef = useRef<AbortController | null>(null)
   const providerBrowserRef = useRef<'chrome' | 'brave'>('chrome')
   const [speed, setSpeed] = useState(1)
@@ -287,6 +291,30 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const aheadKey = `${entry.id}:${episode}:${settings.language}`
   const nearEnd = duration > 0 && (duration - currentTime) / speed <= 60
   const aheadEpisode = !source && intent === 0 ? episode : source?.provider === 'wco' && nextAvailable && nearEnd ? episode + 1 : 0
+  const alternateLanguage = source?.language === 'sub' ? 'dub' : 'sub'
+  const alternateId = source?.provider === 'wco' ? versionLeases[alternateLanguage] : undefined
+
+  useEffect(() => {
+    const attempted = versionAttempted.current
+    if (!providerAvailable || !hiddenPreparation || tab !== 'wco' || !playing || preparing || nearEnd || source?.provider !== 'wco' || !source.language || alternateId || attempted.has(alternateLanguage)) return
+    const controller = new AbortController()
+    let finished = false
+    const timer = window.setTimeout(() => {
+      attempted.add(alternateLanguage)
+      void prefetchSelection(entryRef.current, episode, alternateLanguage, controller.signal).then((ready) => {
+        if (controller.signal.aborted) return
+        finished = true
+        // A provider fallback is not proof that the requested version exists.
+        if (ready?.language === alternateLanguage && ready.playbackId) {
+          setVersionLeases((previous) => ({ ...previous, [alternateLanguage]: ready.playbackId }))
+        }
+      }).catch(() => { if (!controller.signal.aborted) finished = true })
+    }, 1000)
+    return () => {
+      window.clearTimeout(timer); controller.abort()
+      if (!finished) attempted.delete(alternateLanguage)
+    }
+  }, [providerAvailable, hiddenPreparation, tab, playing, preparing, nearEnd, source?.provider, source?.language, alternateLanguage, alternateId, episode])
 
   useEffect(() => {
     if (!providerAvailable || !hiddenPreparation || preparing || tab !== 'wco' || !aheadEpisode || (source && !playing)) return
@@ -313,8 +341,8 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   }, [ahead])
 
   useEffect(() => {
-    if (playing && source?.provider === 'wco' && source.playbackId) return retainPlayback(source.playbackId, providerBrowserRef.current)
-  }, [playing, source?.provider, source?.playbackId])
+    if (playing && source?.provider === 'wco' && source.playbackId) return retainPlayback(source.playbackId, providerBrowserRef.current, alternateId)
+  }, [playing, source?.provider, source?.playbackId, alternateId])
 
   useEffect(() => { setPlaybackPage(savedPage || '') }, [savedPage])
 
@@ -365,6 +393,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     if (!video || video.dataset.cinemaMoving || !media || video.getAttribute('src') !== media.url || !Number.isFinite(video.duration) || video.duration <= 0) return
     const state = readWatchState()
     state.bookmarks[bookmarkPrefix + media.key] = { time: video.ended ? 0 : video.currentTime, duration: video.duration, updatedAt: Date.now() }
+    if (media.provider === 'wco' && !video.error) state.bookmarks[bookmarkPrefix + 'wco'] = state.bookmarks[bookmarkPrefix + media.key]
     if (media.provider === 'wco' && !video.error && video.currentTime > 0) {
       state.lastWatch = { anilistId: entry.anilistId, episode, language: media.language || state.language, updatedAt: Date.now(), finished: video.ended }
     }
@@ -411,6 +440,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     if (sourceRef.current?.local) URL.revokeObjectURL(sourceRef.current.url)
     if (subtitleUrlRef.current) URL.revokeObjectURL(subtitleUrlRef.current)
     sourceRef.current = null
+    versionPosition.current = null
     subtitleUrlRef.current = null
     setSource(null); setSubtitle(null); setMediaError(''); setLoading(false); setPlaying(false); setEnded(false); setCurrentTime(0); setDuration(0)
     if (fileRef.current) fileRef.current.value = ''
@@ -422,6 +452,14 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     void video.play().catch((error) => { if (error?.name !== 'AbortError' && videoRef.current === video) setNotice((previous) => `${previous ? `${previous} ` : ''}Press play to start; your browser requires another click.`) })
   }
 
+  const restorePosition = (video: HTMLVideoElement, position: PlaybackPosition) => {
+    const time = Math.min(position.time, Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.05) : position.time)
+    if (Math.abs(video.currentTime - time) > 0.01) video.currentTime = time
+    video.playbackRate = position.rate; video.volume = position.volume; video.muted = position.muted
+    setCurrentTime(time); setSpeed(position.rate)
+    if (position.paused) video.pause()
+  }
+
   const chooseSource = (next: Source) => {
     const video = videoRef.current
     if (video && sourceRef.current?.url === next.url && video.getAttribute('src') === next.url && !video.error && video.readyState >= 1) {
@@ -429,14 +467,16 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
       // React will not emit loadedmetadata/canplay again for an unchanged URL.
       sourceRef.current = next
       setSource(next); setLoading(video.readyState < 3); setError(''); setNotice(''); setMediaError('')
+      if (next.continuation) restorePosition(video, next.continuation)
+      versionPosition.current = null
       if (next.autoplay) startVideo(video)
       return
     }
     clearSource()
     sourceRef.current = next
-    markedRef.current = false
+    versionPosition.current = next.continuation || null
     autoplayAttempted.current = false
-    playedRanges.current = []
+    if (!next.continuation) { markedRef.current = false; playedRanges.current = [] }
     setSource(next); setSourceGeneration((generation) => generation + 1); setLoading(true); setError(''); setNotice('')
   }
 
@@ -491,7 +531,10 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
       if (episode > 1 && typeof result.previousPage === 'string' && wcoPage(result.previousPage)) pages[`${entry.anilistId}:${episode - 1}:${resolvedLanguage}`] = result.previousPage
       if (typeof result.nextPage === 'string' && wcoPage(result.nextPage)) pages[`${entry.anilistId}:${episode + 1}:${resolvedLanguage}`] = result.nextPage
       updateSettings({ pages, language: resolvedLanguage })
-      chooseSource({ url: videoUrl, name: result.title || `${entry.title} · ${episodeLabel(entry, episode)}`, key: sourceFingerprint(resolvedPage), local: false, autoplay: true, provider: 'wco', language: resolvedLanguage, playbackId: typeof result.playbackId === 'string' ? result.playbackId : undefined, cached: result.cached === true && !options.refresh })
+      const playbackId = typeof result.playbackId === 'string' ? result.playbackId : undefined
+      if (playbackId) setVersionLeases((previous) => ({ ...previous, [resolvedLanguage]: playbackId }))
+      const continuation = options.continuation || versionPosition.current || undefined
+      chooseSource({ url: videoUrl, name: result.title || `${entry.title} · ${episodeLabel(entry, episode)}`, key: sourceFingerprint(resolvedPage), local: false, autoplay: !continuation?.paused, provider: 'wco', language: resolvedLanguage, playbackId, cached: result.cached === true && !options.refresh, continuation })
       if (result.notice) setNotice(result.notice)
     } catch (error) {
       if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : 'WCO could not prepare this episode. Try again.'); onRevealSource() }
@@ -524,8 +567,17 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const chooseVersion = (language: Language) => {
     if (tab !== 'wco') chooseTab('wco')
     if (language === settings.language) return
+    const video = videoRef.current
+    const active = sourceRef.current
+    const continuation = versionPosition.current || (active?.provider === 'wco' && video && video.readyState >= 1 && !video.error
+      ? { time: video.currentTime, paused: video.paused, rate: video.playbackRate, volume: video.volume, muted: video.muted } : undefined)
+    handleTime(); saveBookmark()
+    versionPosition.current = continuation || null
     updateSettings({ language })
-    if (providerAvailable && (intent > 0 || source || preparing || matches.length)) void prepareEpisode({ language })
+    if (active?.provider === 'wco' && active.language === language && video && video.readyState >= 1 && !video.error) {
+      cancelPreparation()
+      chooseSource({ ...active, continuation, autoplay: !continuation?.paused })
+    } else if (providerAvailable && (intent > 0 || source || preparing || matches.length)) void prepareEpisode({ language, continuation })
   }
 
   const applyPage = (value: string, language?: Language) => {
@@ -601,11 +653,19 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
             const video = videoRef.current
             if (!video) return
             setDuration(video.duration); setLoading(false); setMediaError(''); video.playbackRate = speed
-            const bookmark = readWatchState().bookmarks[bookmarkPrefix + source.key]
-            if (!video.dataset.cinemaMoving && bookmark && bookmark.time > 3 && bookmark.time < video.duration - 5 && Math.abs(bookmark.duration - video.duration) < 2) { video.currentTime = bookmark.time; setNotice((previous) => `${previous ? `${previous} ` : ''}Resumed at ${clockLabel(bookmark.time)}.${source.autoplay ? '' : ' Press play when you’re ready.'}`) }
+            const bookmarks = readWatchState().bookmarks
+            const shared = source.provider === 'wco' ? bookmarks[bookmarkPrefix + 'wco'] : undefined
+            const bookmark = shared || bookmarks[bookmarkPrefix + source.key]
+            if (!video.dataset.cinemaMoving && source.continuation && versionPosition.current === source.continuation) restorePosition(video, source.continuation)
+            else if (!video.dataset.cinemaMoving && bookmark && (shared ? bookmark.time > 0 : bookmark.time > 3 && bookmark.time < video.duration - 5 && Math.abs(bookmark.duration - video.duration) < 2)) {
+              const time = Math.min(bookmark.time, Math.max(0, video.duration - 0.05))
+              video.currentTime = time; setCurrentTime(time)
+              setNotice((previous) => `${previous ? `${previous} ` : ''}Resumed at ${clockLabel(time)}.${source.autoplay ? '' : ' Press play when you’re ready.'}`)
+            }
           }} onCanPlay={() => {
             setLoading(false); setMediaError('')
             const video = videoRef.current
+            if (versionPosition.current === source.continuation) versionPosition.current = null
             if (video && source.autoplay && !autoplayAttempted.current && !video.dataset.cinemaMoving) {
               startVideo(video)
             }

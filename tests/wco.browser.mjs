@@ -56,6 +56,20 @@ try {
   clock += 60_000
   assert.equal(retained.retain(active.playbackId), false, 'Even continuous playback cannot retain a signed source beyond four hours')
   console.log('✓ Playing sources retain a short browser-specific lease; expiry, refresh and the four-hour ceiling invalidate it')
+  const pair = new RecentSources(() => clock)
+  const dub = { ...prepared }, sub = { ...prepared, language: 'sub', pageUrl: 'https://www.wco.tv/cowboy-bebop-episode-25-english-subbed' }
+  pair.put(dub, 25, false); pair.put(sub, 25, false)
+  clock += 60_000
+  assert.deepEqual(pair.retainPair(dub.playbackId, sub.playbackId), { retained: true, alternateRetained: true })
+  clock += 60_000
+  assert.equal(pair.get(sub.pageUrl, 25, 'sub', false), sub)
+  assert.deepEqual(pair.retainPair(sub.playbackId, dub.playbackId), { retained: true, alternateRetained: true })
+  pair.get(sub.pageUrl, 25, 'sub', false, true)
+  clock += 60_000
+  assert.deepEqual(pair.retainPair(sub.playbackId, dub.playbackId), { retained: false, alternateRetained: false })
+  clock += 30_000
+  assert.equal(pair.get(dub.pageUrl, 25, 'dub', false), undefined)
+  console.log('✓ Either playing version keeps its alternate ready; an expired primary cannot keep another source alive')
   assert.equal(episodePage(series), series)
   assert.equal(episodePage(episode), episode)
   for (const invalid of ['http://www.wco.tv/anime/test', 'https://www.wco.tv.evil.test/episode', 'https://user@www.wco.tv/episode', 'https://127.0.0.1/episode', 'https://www.wco.tv/inc/embed/index.php', 'https://www.wco.tv/episode?token=secret', 'https://www.wco.tv/wp-admin/admin.php']) {
@@ -133,6 +147,7 @@ try {
   assert.equal((await fetch(`${base}/api/wco/retain`)).status, 405)
   assert.equal((await retain({ playbackId: initialId }, 'https://unrelated.example')).status, 403)
   assert.equal((await retain({ playbackId: prepared.source })).status, 400)
+  assert.equal((await retain({ playbackId: initialId, alternateId: prepared.source })).status, 400)
   assert.equal((await retain({ playbackId: initialId, padding: 'x'.repeat(5000) })).status, 400)
   assert.deepEqual(await (await retain({ playbackId: initialId })).json(), { retained: false })
   const braveStatus = await (await fetch(`${base}/api/wco/status`, { headers: { 'X-WCO-Browser': 'brave' } })).json()
@@ -406,13 +421,14 @@ try {
   assert.equal((await switchRequest).postDataJSON().language, 'sub')
   assert.equal(requests.at(-1).episode, 25)
   await pending.fulfill({ json: { kind: 'source', source, pageUrl: 'https://www.wco.tv/cowboy-bebop-episode-25-english-subbed', language: 'sub', title: 'Cowboy Bebop Episode 25 English Subbed' } })
-  await page.waitForFunction(() => { const video = document.querySelector('video'); return video && !video.paused && video.readyState >= 2 })
+  await page.waitForFunction(() => { const video = document.querySelector('video'); return video && video.paused && video.readyState >= 2 && !video.seeking })
+  assert.ok(Math.abs(await page.locator('video').evaluate(video => video.currentTime) - dockTime) < .2)
   assert.equal(await page.locator('.cinema-layout-dock').count(), 1)
   assert.equal(await version.getByRole('button', { name: 'Subbed' }).getAttribute('aria-pressed'), 'true')
   await information.click()
   assert.match(await miniInfo.innerText(), /English Subbed/)
   await page.keyboard.press('Escape')
-  assert.equal(await page.locator('video').evaluate(video => video.paused), false)
+  assert.equal(await page.locator('video').evaluate(video => video.paused), true)
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('gptnime-tracker-library-v1')).library[0].progress), 24)
   console.log('✓ Compact controls fit 320–1440px; details and Escape preserve media, and Sub/Dub changes play inside the dock')
 

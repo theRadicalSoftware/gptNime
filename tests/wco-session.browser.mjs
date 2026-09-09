@@ -19,7 +19,7 @@ const profile = await mkdtemp(join(tmpdir(), 'gptnime-session-test-'))
 let session
 try {
   const { WcoBrowser, backgroundRunner } = await vite.ssrLoadModule('/server/wcoBrowser.ts')
-  const { PreparationBudget, waitForProvider, resolveWco } = await vite.ssrLoadModule('/server/wco.ts')
+  const { PreparationBudget, waitForProvider, resolveWco, cachedWco } = await vite.ssrLoadModule('/server/wco.ts')
   const executable = process.env.CHROME_PATH || '/usr/bin/google-chrome'
   session = new WcoBrowser(executable, profile)
   const page = await session.getPage()
@@ -132,6 +132,12 @@ try {
   assert.equal(result.source, mediaUrl)
   assert.equal(reopened.url(), 'about:blank')
   assert.equal(episodeLoads, 2)
+  const getPage = session.getPage.bind(session)
+  session.getPage = async () => { assert.fail('A ready cache hit must not acquire the provider tab') }
+  assert.deepEqual(cachedWco(request, session, checkpoints), { ...result, cached: true })
+  assert.equal(cachedWco({ ...request, refresh: true }, session, checkpoints), undefined)
+  assert.equal(cachedWco({ ...request, choose: true }, session, checkpoints), undefined)
+  session.getPage = getPage
   assert.deepEqual(await resolveWco(request, new AbortController().signal, session, checkpoints, () => {}), { ...result, cached: true })
   assert.equal(episodeLoads, 2, 'Returning to a recent episode avoids another provider preparation')
   await resolveWco({ ...request, refresh: true }, new AbortController().signal, session, checkpoints, () => {})

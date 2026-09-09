@@ -39,6 +39,24 @@ A follow-up live library-details run prepared the previously unplayed Delicious 
 
 Evidence and screenshots: ignored `output/research/cold-start-2026-09-08/`, especially `baseline-source.json`, `baseline-viewer.json`, `optimized-viewer.json`, and `optimized-hard-refresh.png`. Test artifacts contain only sanitized measurements and stable selection data, not signed media values.
 
+## Sub/Dub continuity and switching speed — September 8, late evening
+
+The cinema now carries the active episode's timestamp, paused/playing state, playback rate, volume and mute into the other language. Explicit switch positions take precedence over stored bookmarks. WCO also shares an episode bookmark across languages for subsequent reopening; the next episode and local-file resume points remain separate. Switching preserves timecodes, without claiming scene alignment for differently edited versions. Shorter versions clamp to their last frame.
+
+After playback has begun, one bounded hidden job prepares the alternate language. It returns only readiness, expiry, delivered language and an opaque lease ID to the prefetch client. While either version is playing, its heartbeat retains both source leases within the existing browser-specific size, expiry and four-hour limits. The resolver serves cache hits before acquiring the provider work slot. Rapid reversal during a pending switch can resume the already-buffered video without a resolver request. A fallback to the current language is not retained as an available alternate. Pausing during background preparation can rejoin it on resume, and provider failures do not cause a retry loop.
+
+Live ordinary Brave evidence used Delicious in Dungeon episode 1, with a temporary isolated profile, fixture ledger and hidden display. Provider/media requests were not intercepted. The first Sub playback took 19.68 seconds; Dub was prepared about 14.96 seconds later while Sub continued playing.
+
+| Switch | Click to decoded target frame/state | Position before → after | Result |
+| --- | ---: | --- | --- |
+| Sub → Dub, paused | 1.018 s | 120.000 → 120.000 s | Paused, cache hit |
+| Dub → Sub, playing | 1.232 s | 120.577 → 120.929 s | Playback continued, cache hit |
+| Sub → Dub after another 95 seconds of playback | 0.838 s | 240.962 → 240.962 s | Paused, cache hit |
+
+All switches preserved rate 1.25, volume 0.35 and unmuted element state. The native video decoded at width 853, with decoded audio bytes and no media errors. Sub duration was 1607.445 seconds and Dub was 1607.456 seconds. Six paired lease renewals succeeded, fixture progress stayed zero, and no page errors occurred. These are prepared-switch measurements; they do not guarantee that an immediate first switch to an unprepared or provider-gated version will take the same time.
+
+Sanitized measurements and screenshots are in ignored `output/research/versions-2026-09-08/`: `live-viewer.json`, `paused-sub-to-dub.png`, `playing-dub-to-sub.png`, and `switch-after-95-seconds.png`. Signed sources and lease IDs are not written to these artifacts or app storage. The fixture suite separately covers rapid cancellation, failed/expired sources, duration differences, zero/early timestamps and shared bookmarks.
+
 ## Automatic discovery — September 8, 2026
 
 Watch and episode selections now send title aliases, the episode number and language to the local connector without requiring a WCO link. It searches WCO’s public episode results first, compares the complete show/season prefix and exact episode number, and follows the provider-issued page. Series search and All Seasons episode lists provide a fallback; movie searches exclude numbered TV episodes. Duplicate editions and uncertain title matches appear as choices inside the cinema. Next/Previous resolves a fresh source from a remembered stable page or repeats discovery.

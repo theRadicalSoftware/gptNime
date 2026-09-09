@@ -102,6 +102,10 @@ export class RecentSources {
     }
     return false
   }
+  retainPair(playbackId: string, alternateId?: string) {
+    const retained = this.retain(playbackId)
+    return { retained, ...(alternateId ? { alternateRetained: retained && this.retain(alternateId) } : {}) }
+  }
 }
 const recentSources = new WeakMap<WcoBrowser, RecentSources>()
 function requestKey(request: ResolveRequest) {
@@ -339,6 +343,14 @@ export async function resolveWco(request: ResolveRequest, signal: AbortSignal, s
   }
 }
 
+export function cachedWco(request: ResolveRequest, session: WcoBrowser, resumes: Map<string, ResumePoint>) {
+  if (request.choose || request.refresh) return undefined
+  const remembered = resumes.get(requestKey(request))
+  const pageUrl = remembered?.pageUrl || request.url
+  const cached = pageUrl && recentSources.get(session)?.get(pageUrl, request.episode, remembered?.language || request.language, request.movie)
+  return cached ? { ...cached, cached: true } : undefined
+}
+
 async function prepareWco(request: ResolveRequest, signal: AbortSignal, session: WcoBrowser, resumes: Map<string, ResumePoint>, report: ReportPhase): Promise<ResolveResult> {
   if (request.movie && request.url?.includes('/anime/')) throw new PlaybackError('Choose the movie result instead of a TV series.')
   const page = await session.getPage()
@@ -542,8 +554,9 @@ export function wcoPlugin(): Plugin {
     }
     if (path === '/api/wco/retain') {
       const body = await readJson(req).catch(() => null)
-      if (typeof body?.playbackId !== 'string' || !/^[a-f0-9-]{36}$/i.test(body.playbackId)) { json(res, 400, { error: 'Use the current playback session.' }); return }
-      json(res, 200, { retained: recentSources.get(session)?.retain(body.playbackId) || false }); return
+      const validId = (value: unknown) => typeof value === 'string' && /^[a-f0-9-]{36}$/i.test(value)
+      if (!validId(body?.playbackId) || (body.alternateId !== undefined && !validId(body.alternateId))) { json(res, 400, { error: 'Use the current playback session.' }); return }
+      json(res, 200, recentSources.get(session)?.retainPair(body.playbackId, body.alternateId) || { retained: false }); return
     }
     let request: ResolveRequest
     try { request = await readRequest(req) } catch { json(res, 400, { error: 'Use a valid title and episode selection.' }); return }
@@ -557,8 +570,10 @@ export function wcoPlugin(): Plugin {
     try {
       const key = `${browser}:${requestKey(request)}`
       const work = (signal: AbortSignal, report: ReportPhase) => resolveWco(request, signal, session, resumes, report)
-      const result = await (background ? preparation.prefetch(key, work, request.intent) : preparation.resolve(key, work, controller.signal, requestId, request.refresh))
-      json(res, 200, background ? { ready: result.kind === 'source', expiresAt: result.kind === 'source' ? recentSources.get(session)?.expiresAt(result, request.episode, request.movie) || 0 : 0 } : result)
+      // A ready version needs no provider tab. Serve it without cancelling or
+      // waiting behind unrelated background preparation.
+      const result = cachedWco(request, session, resumes) || await (background ? preparation.prefetch(key, work, request.intent) : preparation.resolve(key, work, controller.signal, requestId, request.refresh))
+      json(res, 200, background ? result.kind === 'source' ? { ready: true, expiresAt: recentSources.get(session)?.expiresAt(result, request.episode, request.movie) || 0, playbackId: result.playbackId, language: result.language } : { ready: false, expiresAt: 0 } : result)
     } catch (error) {
       if (error instanceof PreparationBusy) { json(res, 409, { error: 'Another episode is being prepared. Cancel it or wait for it to finish.' }); return }
       // Playwright errors may contain signed URLs. Only our own messages reach UI.

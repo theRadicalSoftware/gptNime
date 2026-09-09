@@ -10,19 +10,25 @@ export function episodePreparation(entry: WatchTitle, episode: number, language:
 
 // The server owns this one bounded background job even if a hover ends or the
 // chooser unmounts. A subsequent Play request can adopt it without restarting.
-export async function prefetchEpisode(entry: WatchTitle, episode: number, language: Language, signal: AbortSignal, intent = false): Promise<number> {
-  if (readWatchState().sourceTab !== 'wco' || signal.aborted) return 0
+export type PreparedSelection = { expiresAt: number; playbackId?: string; language?: Language }
+export async function prefetchSelection(entry: WatchTitle, episode: number, language: Language, signal: AbortSignal, intent = false): Promise<PreparedSelection | null> {
+  if (readWatchState().sourceTab !== 'wco' || signal.aborted) return null
   const browser = await localPlaybackBrowser()
   const headers = { 'X-WCO-Browser': browser }
   const status = await (await fetch('/api/wco/status', { headers, signal })).json()
-  if (!status.available || !status.hiddenPreparation || signal.aborted) return 0
+  if (!status.available || !status.hiddenPreparation || signal.aborted) return null
   const response = await fetch('/api/wco/prefetch', {
     method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, signal,
     body: JSON.stringify({ ...episodePreparation(entry, episode, language), ...(intent ? { intent: true } : {}) }),
   })
-  if (!response.ok) return 0
+  if (!response.ok) return null
   const result = await response.json()
-  return result.ready && Number.isFinite(result.expiresAt) && result.expiresAt > Date.now() ? result.expiresAt : 0
+  if (!result.ready || !Number.isFinite(result.expiresAt) || result.expiresAt <= Date.now()) return null
+  return { expiresAt: result.expiresAt, playbackId: typeof result.playbackId === 'string' ? result.playbackId : undefined, language: result.language === 'sub' || result.language === 'dub' ? result.language : undefined }
+}
+
+export async function prefetchEpisode(entry: WatchTitle, episode: number, language: Language, signal: AbortSignal, intent = false): Promise<number> {
+  return (await prefetchSelection(entry, episode, language, signal, intent))?.expiresAt || 0
 }
 
 export function scheduleEpisodePreparation(entry: WatchTitle, episode: number, delay = 250) {
@@ -35,7 +41,7 @@ export function scheduleEpisodePreparation(entry: WatchTitle, episode: number, d
 
 // Only a playing video extends its short server-memory lease. The opaque ID is
 // never persisted and cannot start a browser or recover an expired source.
-export function retainPlayback(playbackId: string, browser: 'chrome' | 'brave') {
+export function retainPlayback(playbackId: string, browser: 'chrome' | 'brave', alternateId?: string) {
   let stopped = false
   let timer = 0
   let controller: AbortController | undefined
@@ -45,7 +51,7 @@ export function retainPlayback(playbackId: string, browser: 'chrome' | 'brave') 
     try {
       const response = await fetch('/api/wco/retain', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-WCO-Browser': browser },
-        signal: controller.signal, body: JSON.stringify({ playbackId }),
+        signal: controller.signal, body: JSON.stringify({ playbackId, ...(alternateId && alternateId !== playbackId ? { alternateId } : {}) }),
       })
       if (response.ok && (await response.json()).retained === false) stopped = true
     } catch { /* Playback continues; a later Play can prepare a new source. */ }
