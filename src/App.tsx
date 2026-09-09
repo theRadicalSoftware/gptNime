@@ -1075,7 +1075,7 @@ function mapMedia(media: AniListMedia): SearchResult {
     title: media.title?.english || media.title?.romaji || 'Untitled anime',
     titleEnglish: media.title?.english || undefined,
     nativeTitle: media.title?.native || undefined,
-    synonyms: media.synonyms || [],
+    synonyms: [...new Set([media.title?.romaji, ...(media.synonyms || [])].filter((title): title is string => !!title))],
     format: media.format,
     releaseStatus: media.status,
     episodesTotal: media.episodes,

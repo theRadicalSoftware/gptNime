@@ -156,6 +156,55 @@ try {
   console.log('✓ Preparation never requests focus; access recovery reloads the episode with the accepted fixture session')
   await session.park(reopened)
   assert.equal(reopened.url(), 'about:blank')
+
+  // Movie search/access/player regression using fixtures, never a real account.
+  const movieUrl = 'https://www.wco.tv/naruto-the-movie-the-last-english-dubbed'
+  const gurrenUrl = 'https://www.wco.tv/gurren-lagann-childhoods-end-fixture'
+  const gurrenTitle = "Gurren Lagann The Movie: Childhood's End"
+  let movieAccess = false
+  let catalogueAccess = false
+  let movieSearches = 0
+  let movieLoads = 0
+  await context.route('https://www.wco.tv/**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/search') {
+      movieSearches++
+      const fields = new URLSearchParams(route.request().postData())
+      assert.equal(fields.get('konuara'), 'episodes')
+      assert.doesNotMatch(fields.get('catara'), /\bmovie\b/i)
+      const link = fields.get('catara').includes('Naruto') ? `<a href="${movieUrl}">Naruto The Movie: The Last English Dubbed</a>` : '<a href="https://www.wco.tv/the-drawn-together-movie">The Drawn Together Movie</a>'
+      return route.fulfill({ contentType: 'text/html', body: `<title>Search</title><div id="sidebar_right2"><ul class="ul-episodes"><li>${link}</li></ul></div>` })
+    }
+    if (path === '/movie-list') return route.fulfill({ contentType: 'text/html', body: `<title>Movies</title>${catalogueAccess ? `<div id="sidebar_right2"><a href="${gurrenUrl}">${gurrenTitle} English Dubbed</a></div>` : '<h1>This Video Is for Premium Users</h1>'}` })
+    assert.ok([movieUrl, gurrenUrl].includes(route.request().url()))
+    movieLoads++
+    const title = path.includes('gurren') ? gurrenTitle : 'Naruto The Movie: The Last'
+    return route.fulfill({ contentType: 'text/html', body: `<title>${title} English Dubbed</title>${movieAccess ? `<iframe src="https://embed.wcostream.com/fixture-player"></iframe><div class="prev-next"><a href="${episodeUrl}">Wrong Show Episode 2 English Dubbed</a></div>` : '<h1>This Video Is for Premium Users</h1>'}` })
+  })
+  await context.route('https://embed.wcostream.com/**', (route) => route.fulfill({ contentType: 'text/html', body: `<video src="${mediaUrl}" preload="metadata"></video>` }))
+  await context.route(mediaUrl, (route) => route.fulfill({ contentType: 'video/webm', body: media }))
+  session.show = async () => { assert.fail('Movie preparation stole window focus') }
+  const film = { titles: ['The Last: Naruto the Movie'], episode: 1, movie: true, language: 'dub', choose: false }
+  await assert.rejects(resolveWco(film, new AbortController().signal, session, checkpoints, () => {}), (error) => error.code === 'access' && /this movie/.test(error.message))
+  assert.equal(movieSearches, 1)
+  assert.equal(reopened.url(), movieUrl)
+  movieAccess = true // Simulate the provider granting this fixture's access.
+  const readyMovie = await resolveWco(film, new AbortController().signal, session, checkpoints, () => {})
+  assert.equal(readyMovie.kind, 'source')
+  assert.equal(readyMovie.source, mediaUrl)
+  assert.equal(readyMovie.pageUrl, movieUrl)
+  assert.equal(readyMovie.previousPage, null)
+  assert.equal(readyMovie.nextPage, null)
+  assert.equal(movieSearches, 1, 'Movie retry uses its saved selection')
+  assert.equal(movieLoads, 2)
+  const missing = { ...film, titles: [gurrenTitle] }
+  await assert.rejects(resolveWco(missing, new AbortController().signal, session, checkpoints, () => {}), (error) => error.code === 'access' && /public search.*catalogue requires premium/.test(error.message))
+  assert.equal(reopened.url(), 'https://www.wco.tv/movie-list')
+  catalogueAccess = true
+  assert.equal((await resolveWco(missing, new AbortController().signal, session, checkpoints, () => {})).pageUrl, gurrenUrl)
+  assert.equal(reopened.url(), 'about:blank')
+  session.show = show
+  console.log('✓ Movies resolve automatically, surface access gates promptly, retry with the saved session and never inherit TV episode neighbors')
 } finally {
   await session?.close()
   await vite.close()

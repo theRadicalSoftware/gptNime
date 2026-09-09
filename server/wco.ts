@@ -20,8 +20,8 @@ class PlaybackError extends Error {
   constructor(message: string, readonly code?: 'verification' | 'access') { super(message) }
 }
 
-export function providerAccessMessage(body: string): string | null {
-  if (/this video is for premium users/i.test(body)) return 'WCO restricts this episode to premium accounts. If you already have access, sign in in the WCO window, then retry. Your WCO session is saved.'
+export function providerAccessMessage(body: string, movie = false): string | null {
+  if (/this video is for premium users/i.test(body)) return `WCO restricts this ${movie ? 'movie' : 'episode'} to premium accounts. If you already have access, sign in in the WCO window, then retry. Your WCO session is saved.`
   return null
 }
 
@@ -116,9 +116,36 @@ export function searchCandidates(links: Link[], movie: boolean): Link[] {
 }
 
 export function automaticMatch(links: Link[], titles: string[], language: 'sub' | 'dub', movie: boolean): Link | null {
-  const keys = new Set(titles.map((title) => titleKey(title, movie)).filter(Boolean))
-  const exact = searchCandidates(links, movie).filter((link) => keys.has(titleKey(link.title, movie)))
+  const keysFor = (title: string) => movie ? [titleKey(title, true), movieTitleKey(title)] : [titleKey(title)]
+  const keys = new Set(titles.flatMap(keysFor).filter(Boolean))
+  const exact = searchCandidates(links, movie).filter((link) => keysFor(link.title).some((key) => keys.has(key)))
   return preferredMatch(exact, language)
+}
+
+// Film names sometimes reverse the franchise and subtitle around a colon.
+// Preserve each complete part and all numbers; never match on franchise alone.
+function movieTitleKey(title: string): string {
+  return title.split(':').map((part) => titleKey(part, true)).filter(Boolean).sort().join(':')
+}
+
+export function movieSearchQueries(titles: string[]): string[] {
+  return [...new Set(titles.map((title) => title.replace(/\b(?:the\s+)?movie\b/gi, '').replace(/\s+/g, ' ').trim()).filter(Boolean))].slice(0, 3)
+}
+
+export function relevantMovieCandidates(links: Link[], titles: string[]): Link[] {
+  // WCO's search matches common words independently. Do not offer an unrelated
+  // film merely because both names contain "The Movie" or a Japanese "hen".
+  const words = (title: string) => new Set(title.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/['’]/g, '').toLowerCase()
+    .replace(/\b(?:english|dubbed|subbed|the|a|an|of|and|movie|gekijouban|hen)\b/g, ' ').match(/[a-z0-9]+/g) || [])
+  const aliases = titles.map(words).filter((tokens) => tokens.size)
+  return searchCandidates(links, true).map((link) => {
+    const tokens = words(link.title)
+    const score = Math.max(0, ...aliases.map((alias) => {
+      const overlap = [...alias].filter((word) => tokens.has(word)).length
+      return overlap >= Math.min(2, alias.size) ? overlap / Math.max(tokens.size, alias.size) : 0
+    }))
+    return { link, score }
+  }).filter(({ score }) => score >= 0.4).sort((a, b) => b.score - a.score).map(({ link }) => link)
 }
 
 function preferredMatch(exact: Link[], language: 'sub' | 'dub'): Link | null {
@@ -180,7 +207,7 @@ export async function waitForProvider(page: Page, budget: PreparationBudget, sig
 }
 
 async function discover(page: Page, request: ResolveRequest, budget: PreparationBudget, signal: AbortSignal, report: ReportPhase) {
-  const queries = [...new Set([...request.titles.slice(0, 2), request.titles[0]?.split(':')[0], ...request.titles.slice(2)].filter(Boolean))].slice(0, 3)
+  const queries = request.movie ? movieSearchQueries(request.titles) : [...new Set([...request.titles.slice(0, 2), request.titles[0]?.split(':')[0], ...request.titles.slice(2)].filter(Boolean))].slice(0, 3)
   let candidates: Link[] = []
   report('searching')
   const search = async (query: string, scope: 'episodes' | 'series') => {
@@ -217,7 +244,26 @@ async function discover(page: Page, request: ResolveRequest, budget: Preparation
     candidates = searchCandidates([...candidates, ...results], request.movie)
     const match = automaticMatch(candidates, request.titles, request.language, request.movie)
     if (match && !request.choose) return { match, candidates }
-    if (request.choose && candidates.length) break
+    if (request.choose && (request.movie ? relevantMovieCandidates(candidates, request.titles) : candidates).length) break
+  }
+  if (request.movie) {
+    candidates = relevantMovieCandidates(candidates, request.titles)
+    if (!candidates.length) {
+      // The movie catalogue may contain a film absent from public search. Read
+      // its normal page, including its access state, in this same saved session.
+      signal.throwIfAborted()
+      if (Date.now() >= budget.end) throw new PlaybackError('WCO movie lookup took too long. Retry playback to continue with your saved session.')
+      await page.goto('https://www.wco.tv/movie-list', { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+      await waitForProvider(page, budget, signal, report, 'searching')
+      if (new URL(page.url()).hostname !== 'www.wco.tv' || new URL(page.url()).pathname !== '/movie-list') throw new PlaybackError('WCO’s movie catalogue is unavailable right now. Retry playback shortly.')
+      if (providerAccessMessage(await page.locator('body').innerText().catch(() => ''), true)) {
+        throw new PlaybackError('This film was not found in WCO’s public search, and its movie catalogue requires premium access. If you have access, sign in in the WCO window, then retry.', 'access')
+      }
+      const links = await page.locator('#sidebar_right2 a[href]').evaluateAll((links) => links.map((link) => ({ url: (link as HTMLAnchorElement).href, title: link.textContent?.trim() || '' })))
+      const match = automaticMatch(links, request.titles, request.language, true)
+      candidates = relevantMovieCandidates(links, request.titles)
+      if (match && !request.choose) return { match, candidates }
+    }
   }
   return { match: null, candidates: candidates.slice(0, 8) }
 }
@@ -358,7 +404,7 @@ async function prepareWco(request: ResolveRequest, signal: AbortSignal, session:
       }
       const mismatch = selectionError(title, { ...request, language })
       if (mismatch) throw new PlaybackError(mismatch)
-      const accessMessage = providerAccessMessage(await page.locator('body').innerText().catch(() => ''))
+      const accessMessage = providerAccessMessage(await page.locator('body').innerText().catch(() => ''), request.movie)
       if (accessMessage) {
         resumes.set(key, { pageUrl: selectedPage, language, notice: languageNotice, seriesPage, reload: true })
         throw new PlaybackError(accessMessage, 'access')
@@ -380,7 +426,7 @@ async function prepareWco(request: ResolveRequest, signal: AbortSignal, session:
         }).catch(() => null)
         if (media && videoSource(media.source) && media.ready >= 1) {
           await video.evaluate((node: HTMLVideoElement) => node.pause()).catch(() => {})
-          const links = await episodeLinks(page, false)
+          const links = request.movie ? [] : await episodeLinks(page, false)
           const previous = matchingEpisodes(links, request.episode - 1, language)
           const next = matchingEpisodes(links, request.episode + 1, language)
           await session.park(page)

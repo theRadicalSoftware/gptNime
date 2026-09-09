@@ -8,7 +8,7 @@ const server = await createServer({ server: { host: '127.0.0.1', port: 5198, str
 await server.listen()
 let browser
 try {
-  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage, providerBrowser, RecentSources } = await server.ssrLoadModule('/server/wco.ts')
+  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage, providerBrowser, RecentSources, movieSearchQueries, relevantMovieCandidates } = await server.ssrLoadModule('/server/wco.ts')
   assert.equal(providerBrowser(undefined), 'chrome')
   assert.equal(providerBrowser('brave'), 'brave')
   assert.equal(providerBrowser('/usr/bin/untrusted'), null)
@@ -63,6 +63,19 @@ try {
   const moviePage = { title: 'Your Name. English Dubbed', url: 'https://www.wco.tv/your-name-english-dubbed' }
   assert.equal(automaticMatch([moviePage, ...links, ...candidates], ['Your Name.'], 'sub', true)?.url, moviePage.url)
   assert.deepEqual(searchCandidates([moviePage, moviePage, ...links, ...candidates], true), [moviePage])
+  const last = { title: 'Naruto The Movie: The Last English Dubbed', url: 'https://www.wco.tv/naruto-the-movie-the-last-english-dubbed' }
+  assert.equal(automaticMatch([last, moviePage], ['The Last: Naruto the Movie'], 'dub', true), last)
+  assert.equal(automaticMatch([last], ['Boruto: Naruto the Movie'], 'dub', true), null)
+  assert.equal(automaticMatch([last, { ...last, url: `${last.url}-remastered` }], ['The Last: Naruto the Movie'], 'dub', true), null)
+  const gurren = "Gurren Lagann The Movie: Childhood's End"
+  const unpunctuatedMovie = { title: "Gurren Lagann Movie Childhood's End English Dubbed", url: 'https://www.wco.tv/gurren-lagann-childhoods-end-fixture' }
+  assert.equal(automaticMatch([unpunctuatedMovie], [gurren], 'dub', true), unpunctuatedMovie)
+  assert.deepEqual(movieSearchQueries([gurren, gurren]), ["Gurren Lagann : Childhood's End"])
+  assert.deepEqual(relevantMovieCandidates([moviePage, last, { title: 'The Drawn Together Movie: The Movie!', url: 'https://www.wco.tv/the-drawn-together-movie-the-movie' }, { title: 'Hen, his wife', url: 'https://www.wco.tv/hen-his-wife' }], [gurren, 'Tengen Toppa Gurren Lagann: Gurren-hen']), [])
+  assert.deepEqual(relevantMovieCandidates([moviePage, last], ['The Last: Naruto the Movie']), [last])
+  assert.deepEqual(relevantMovieCandidates([{ title: "World's End OVA English Subbed", url: 'https://www.wco.tv/worlds-end-ova-english-subbed' }], [gurren]), [])
+  assert.match(providerAccessMessage('This Video Is for Premium Users', true), /this movie/)
+  console.log('✓ Movie discovery preserves film identity across colon order, rejects unrelated results and retains ambiguous editions')
   assert.deepEqual(searchEpisodeCandidates([
     { title: 'Cowboy Bebop: Episode 25 English Dubbed', url: episode },
     { title: 'Cowboy Bebop: Episode 25 English Dubbed', url: episode },
@@ -329,6 +342,48 @@ try {
   assert.ok(switchBounds.y + switchBounds.height <= dock.y + dock.height + 1)
   await page.screenshot({ path: 'output/cinema/10-version-dock.png' })
   console.log('✓ The inline WCO controls fit a 390px mobile viewport')
+
+  await page.setViewportSize({ width: 1440, height: 1080 })
+  const movieTitle = "Gurren Lagann The Movie: Childhood's End"
+  await page.evaluate(({ ledger, movieTitle }) => {
+    localStorage.setItem('gptnime-tracker-library-v1', JSON.stringify({ ...ledger, library: [{ ...ledger.library[0], title: movieTitle, progress: 0, episodesTotal: 1, format: 'MOVIE' }] }))
+    localStorage.setItem('gptnime-cinema-v1', JSON.stringify({ autoMark: false, language: 'dub' }))
+  }, { ledger, movieTitle })
+  await page.reload()
+  await page.locator('.anime-tv-fab').click()
+  await page.getByRole('status').filter({ hasText: 'Movie prepared' }).waitFor()
+  await page.locator('.cinema-queue-row').click()
+  await page.getByRole('button', { name: 'Preparing movie…', exact: true }).waitFor()
+  assert.equal(requests.at(-1).movie, true)
+  assert.equal(requests.at(-1).episode, 1)
+  assert.deepEqual(requests.at(-1).titles, [movieTitle])
+  const beforeMovieFocus = focused
+  await pending.fulfill({ status: 422, json: { code: 'access', error: 'WCO restricts this movie to premium accounts. If you already have access, sign in in the WCO window, then retry. Your WCO session is saved.' } })
+  const feedback = page.locator('.cinema-screen-feedback')
+  await feedback.getByRole('alert').waitFor()
+  assert.equal(focused, beforeMovieFocus, 'A movie access error must never show the provider automatically')
+  await page.screenshot({ path: 'output/cinema/11-movie-access.png' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  const screenBounds = await page.locator('.cinema-screen').boundingBox()
+  const feedbackBounds = await feedback.boundingBox()
+  assert.ok(screenBounds.x >= 0 && screenBounds.x + screenBounds.width <= 390, 'The feedback player itself fits the mobile viewport')
+  assert.ok(feedbackBounds.y >= screenBounds.y && feedbackBounds.y + feedbackBounds.height <= screenBounds.y + screenBounds.height + 1, 'Movie access and recovery actions fit inside the player')
+  assert.ok(feedbackBounds.x >= screenBounds.x && feedbackBounds.x + feedbackBounds.width <= screenBounds.x + screenBounds.width + 1, 'Movie access text wraps within the mobile player')
+  assert.equal(await page.locator('.cinema-ahead').count(), 0, 'A failed foreground movie cannot still be labelled prepared')
+  await page.screenshot({ path: 'output/cinema/12-movie-mobile.png' })
+  await feedback.getByRole('button', { name: 'Open WCO session' }).click()
+  assert.equal(focused, beforeMovieFocus + 1)
+  await feedback.getByRole('button', { name: 'Retry movie' }).click()
+  await page.getByRole('button', { name: 'Preparing movie…', exact: true }).waitFor()
+  assert.equal(requests.at(-1).refresh, true)
+  assert.equal(requests.at(-1).movie, true)
+  await pending.fulfill({ json: { kind: 'source', source, pageUrl: 'https://www.wco.tv/gurren-lagann-childhoods-end-fixture', language: 'dub', title: movieTitle } })
+  await page.waitForFunction(() => { const video = document.querySelector('video'); return video && !video.paused && video.currentTime > 0 && video.videoWidth > 0 })
+  assert.equal(await feedback.count(), 0)
+  assert.equal(await page.getByRole('button', { name: 'Next episode in cinema' }).isDisabled(), true)
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('gptnime-tracker-library-v1')).library[0].progress), 0)
+  assert.deepEqual(errors, [])
+  console.log('✓ Movie access appears inside the player on desktop/mobile; explicit recovery plays a fixture film without changing watch progress')
 } finally {
   await browser?.close()
   await server.close()

@@ -91,6 +91,28 @@ Episode 1 decoded at 853 × 480 with duration 3480.16 seconds and advancing audi
 
 Ignored evidence: `output/research/prefetch-2026-09-08/optimized.json` (fresh baseline), `live-viewer.json`, `hidden-preparation.png`, `live-playback.png`, `next-prepared.png`, and `next-playing.png`. Screenshots show the subtle prepared indicator beneath the episode controls. Media URLs stayed in process memory; saved network records contain no query values. All testing used private virtual displays.
 
+## Movie discovery and access — September 8, evening
+
+The movie report exposed separate lookup and availability failures. WCO's public search matched broad words independently, returning unrelated films for **Gurren Lagann The Movie: Childhood's End**. The previous resolver offered the first eight results even when none matched the film. **The Last: Naruto the Movie** also failed automatic matching because WCO labels its page **Naruto The Movie: The Last**.
+
+Movie queries now omit the generic "The Movie" phrase, and uncertain choices must share meaningful title words. Apostrophes do not create a standalone matching `s`. Automatic selection still requires full identity: complete colon-separated franchise/subtitle parts may change order, but numbers, sequels and ambiguous editions remain distinct. AniList mapping retains the romaji title among aliases on newly fetched metadata. If no relevant public results remain, the resolver checks the normal movie catalogue in its existing session and reports an access gate there separately from a gate on an identified film. An accessible catalogue is also searched for exact matches; that path has fixture coverage, not live premium-account verification.
+
+Preparation, reload, retry and prepared indicators use movie labels for films. Access/lookup errors appear directly inside the player with explicit **Open WCO session** and **Retry movie** actions. Uncertain results have a **Choose movie version** button that scrolls to their list. Failed foreground preparation clears its earlier prepared indicator. Movie sources never save neighboring TV episode links.
+
+A complete live run used the actual local API and ordinary Brave, isolated profiles and a fixture ledger, without intercepting WCO traffic:
+
+| Film | Result after clicking |
+| --- | --- |
+| Gurren Lagann The Movie: Childhood's End | No relevant public match; movie catalogue returned premium access, surfaced in 6.474 seconds |
+| The Last: Naruto the Movie | Automatically found the reversed-title movie page; premium access surfaced in 1.658 seconds |
+| Your Name. | Automatically found its movie page; premium access surfaced in 1.703 seconds |
+
+These timings measure reporting the provider's access state, **not successful movie playback**. The observed pages were `https://www.wco.tv/movie-list`, `https://www.wco.tv/naruto-the-movie-the-last-english-dubbed`, and `https://www.wco.tv/your-name-english-dubbed`. WCO supplied no movie source to the isolated unauthenticated session. This does not establish whether Gurren Lagann is available after sign-in. Real premium-account movie delivery remains unverified. No verification or subscription barrier was bypassed.
+
+The browser suite verifies desktop/mobile access messages, explicit-only session opening, movie requests without pasted links, a decoded fixture movie after Retry, unchanged progress, and no stale prepared label. The session suite covers automatic movie lookup, simulated access recovery using the same page/session, a simulated accessible catalogue, and absence of TV neighbors. Build, lint, cinema, WCO, session and preparation checks pass. All headed testing uses private virtual displays and never touches the user's desktop or ledger.
+
+Ignored evidence: `output/research/movies-2026-09-08/live-viewer.json`, `provider-findings.json`, `naruto-premium.png`, and `live-movie-1.png` through `live-movie-3.png`. Final desktop/mobile UI fixture screenshots are `output/cinema/11-movie-access.png` and `12-movie-mobile.png`. Provider query values were not recorded.
+
 ## Initial result before the delivery fix
 
 Cowboy Bebop episode 25 played successfully in WCO's normal player in headed Chrome. The same provider-issued video URL initially failed inside the actual gptNime cinema at `http://127.0.0.1:5190`. WCO's alternate Chromecast player also decoded the episode, but its issued media route initially failed from gptNime as well. The remaining sections preserve that earlier investigation; the resolved result above supersedes its implementation status.

@@ -27,7 +27,7 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-screen:not(.has-video)::before { position: absolute; inset: 0; z-index: -1; content: ''; background: linear-gradient(90deg, #081016b8, #08101615), linear-gradient(0deg, #08101680, transparent 60%); }
 .cinema-screen.has-video { background: #000; border-color: #ffffff16; }
 .cinema-screen video { display: block; width: 100%; height: 100%; position: absolute; inset: 0; object-fit: contain; background: #000; }
-.cinema-screen-intro { padding: 34px; max-width: 85%; }
+.cinema-screen-intro { padding: 34px; width: 100%; min-width: 0; max-width: 85%; overflow-wrap: anywhere; }
 .cinema-night-tag { color: #a5bcbc; font-size: 8px; letter-spacing: .22em; display: flex; align-items: center; gap: 8px; margin-bottom: 30px; }
 .cinema-night-tag > span { width: 5px; height: 5px; border-radius: 50%; background: #90b8b5; box-shadow: 0 0 8px #90b8b54a; }
 .cinema-screen-episode { color: #dcc797; font-size: 11px; letter-spacing: .04em; }
@@ -39,6 +39,11 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-button.primary:hover { background: #f0d398; }
 .cinema-start { margin-top: 23px; padding: 12px 17px; }
 .cinema-screen-footnote { display: block; color: #adb8b8; font-size: 9px; margin-top: 12px; }
+.cinema-screen.has-feedback { width: 100%; min-height: 300px; }
+.cinema-screen.has-feedback .cinema-night-tag { display: none; }
+.cinema-screen-feedback { max-width: 540px; }
+.cinema-screen-feedback p { color: #e5cead; }
+.cinema-screen-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
 .cinema-now-playing { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid #ffffff0e; }
 .cinema-now-playing > span:first-child { min-width: 0; display: flex; align-items: center; gap: 9px; }
 .cinema-now-playing b { font-size: 12px; color: #e4d6bd; white-space: nowrap; }
