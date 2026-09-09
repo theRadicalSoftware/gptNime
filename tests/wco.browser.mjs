@@ -343,6 +343,50 @@ try {
   await page.screenshot({ path: 'output/cinema/10-version-dock.png' })
   console.log('✓ The inline WCO controls fit a 390px mobile viewport')
 
+  await page.locator('video').evaluate(video => { video.dataset.dockIdentity = 'dock-video'; video.pause(); video.currentTime = 3 })
+  await page.waitForFunction(() => { const video = document.querySelector('video'); return video && !video.seeking && video.paused })
+  const dockTime = await page.locator('video').evaluate(video => video.currentTime)
+  const information = page.getByRole('button', { name: 'Episode information', exact: true })
+  await information.click()
+  const miniInfo = page.getByRole('complementary', { name: 'Episode information', exact: true })
+  assert.match(await miniInfo.innerText(), /Cowboy Bebop.*25 of 26/s)
+  assert.match(await miniInfo.innerText(), /Cowboy Bebop: Episode 25 English Dubbed/)
+  await miniInfo.getByRole('button', { name: 'Title details' }).focus()
+  await page.keyboard.press('Escape')
+  assert.equal(await information.getAttribute('aria-expanded'), 'false')
+  assert.equal(await information.evaluate(node => node === document.activeElement), true)
+  assert.equal(await page.locator('.cinema-layout-dock').count(), 1)
+  assert.equal(await page.locator('video').getAttribute('data-dock-identity'), 'dock-video')
+  assert.ok(Math.abs(await page.locator('video').evaluate(video => video.currentTime) - dockTime) < 0.2, 'Opening episode information must preserve the settled playback position')
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({ width, height: 1080 })
+    const boxes = await page.locator('.watch-cinema').evaluate(panel => {
+      const box = node => { const r = node.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height } }
+      return { panel: box(panel), video: box(panel.querySelector('video')), controls: box(panel.querySelector('.cinema-controls')), buttons: [...panel.querySelectorAll('.cinema-controls button')].filter(node => node.getClientRects().length).map(box) }
+    })
+    assert.ok(boxes.panel.x >= 0 && boxes.panel.right <= width)
+    assert.ok(boxes.video.width >= boxes.panel.width - 3, 'Mini video spans the panel width')
+    assert.ok(boxes.controls.height <= 46, 'Navigation and version fit in one row')
+    assert.ok(boxes.buttons.every(button => button.x >= boxes.panel.x && button.right <= boxes.panel.right && button.y >= boxes.controls.y && button.bottom <= boxes.controls.bottom))
+    assert.equal(await page.locator('.cinema-time').isVisible(), true)
+    if (width >= 390) assert.equal(await page.locator('.cinema-episode-total').isVisible(), true)
+  }
+  await page.setViewportSize({ width: 390, height: 844 })
+  const switchRequest = page.waitForRequest(request => request.url().endsWith('/api/wco/resolve'))
+  await version.getByRole('button', { name: 'Subbed', exact: true }).click()
+  assert.equal((await switchRequest).postDataJSON().language, 'sub')
+  assert.equal(requests.at(-1).episode, 25)
+  await pending.fulfill({ json: { kind: 'source', source, pageUrl: 'https://www.wco.tv/cowboy-bebop-episode-25-english-subbed', language: 'sub', title: 'Cowboy Bebop Episode 25 English Subbed' } })
+  await page.waitForFunction(() => { const video = document.querySelector('video'); return video && !video.paused && video.readyState >= 2 })
+  assert.equal(await page.locator('.cinema-layout-dock').count(), 1)
+  assert.equal(await version.getByRole('button', { name: 'Subbed' }).getAttribute('aria-pressed'), 'true')
+  await information.click()
+  assert.match(await miniInfo.innerText(), /English Subbed/)
+  await page.keyboard.press('Escape')
+  assert.equal(await page.locator('video').evaluate(video => video.paused), false)
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('gptnime-tracker-library-v1')).library[0].progress), 24)
+  console.log('✓ Compact controls fit 320–1440px; details and Escape preserve media, and Sub/Dub changes play inside the dock')
+
   await page.setViewportSize({ width: 1440, height: 1080 })
   const movieTitle = "Gurren Lagann The Movie: Childhood's End"
   await page.evaluate(({ ledger, movieTitle }) => {

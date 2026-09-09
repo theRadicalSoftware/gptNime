@@ -19,6 +19,22 @@ The lineup includes the whole library, with active watching titles first. Comple
 
 **Dock** keeps the player at the bottom right while the rest of the app is usable. **Pop out** uses Document Picture-in-Picture when available, otherwise an app-owned browser popup. **Pop in**, or closing the separate window, returns the same video element. Cross-document adoption can reload media, so the implementation restores its timestamp, speed and play/pause state. A browser that rejects resumed playback receives a visible “Press play” message. Closing the cinema stops and releases its media.
 
+## Compact mini-player — September 8, evening
+
+The dock uses a 480px maximum width with the video spanning the panel, a single-line title header and one compact control row. Episode number, Previous/Next, Sub/Dub and watched controls remain available. Playback time is now visible in the dock. The **Episode information** button reveals the complete title, episode name, source name, watched status and title-details action. Escape closes that information panel and returns focus to its button without closing the dock or interrupting playback. Full cinema and pop-out continue using the same video element.
+
+At 390px the episode total also remains visible; below 360px the total is available in Episode information to keep the controls on one row. Marking several episodes at once retains its full **Mark through ep N** label on a separate row. Films omit the disabled episode arrows. Native video controls continue to provide play/pause, seeking, volume and fullscreen.
+
+DevTools measurements in isolated Chrome and Brave browsers with a local silent test video:
+
+| Viewport | Previous panel / video | Updated panel / video |
+| --- | --- | --- |
+| Desktop | 440 × 448px / 418 × 234px | 480 × 390px / 478 × 269px |
+| 390px mobile | 358 × 406px / 336 × 188px | 358 × 321px / 356 × 200px |
+| 320px mobile | 288 × 402px / 266 × 149px | 288 × 282px / 286 × 161px |
+
+The desktop video has approximately 31% more area while the whole player is 58px shorter. The default navigation/version row is 44px tall at all three sizes. Measurements cover the collapsed information panel; opening details adds room for its content. Screenshots and geometry are in ignored `output/research/mini-player-2026-09-08/` (`before-*.png`, `after-*.png`, `after-details.png`, and geometry JSON). These screenshots use an intercepted provider response and generated test video, not live anime playback. Browser checks cover the compact row at all three sizes, full source details, keyboard dismissal and focus return, unchanged video identity and paused position, Sub/Dub playback inside the dock, and native pop-out/pop-in. Tests leave the user's ledger and desktop untouched.
+
 ## Progress and resume
 
 The selected episode is independent of ledger progress. Marking watched never silently switches the current source to another episode. Next/Previous/selecting another title unloads the previous source and subtitles. WCO prepares and starts the new selection automatically; local files and direct URLs still require choosing the corresponding source.

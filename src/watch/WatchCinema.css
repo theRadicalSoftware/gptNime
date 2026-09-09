@@ -55,7 +55,7 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-episode-navigation { display: flex; gap: 5px; align-items: center; margin-right: auto; }
 .cinema-episode-navigation label { display: flex; align-items: center; gap: 7px; color: #ccc5b9; font-size: 11px; }
 .cinema-episode-navigation input { width: 67px; padding: 7px 6px; text-align: center; font-variant-numeric: tabular-nums; }
-.cinema-episode-navigation label > span { color: #999; font-size: 10px; }
+.cinema-episode-navigation .cinema-episode-total { color: #999; font-size: 10px; }
 .cinema-feature { color: #b9b1a1; font-size: 11px; display: flex; align-items: center; gap: 8px; }
 .cinema-mark { border-color: #e5c17c38; color: var(--cinema-gold); }
 .cinema-source-desk { border-top: 1px solid #ffffff0e; padding-top: 20px; }
@@ -142,28 +142,58 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-empty { min-height: 450px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 15px; background: linear-gradient(#0a101544, #0a1015a0), url('/art/cinema-rooftop.png') center / cover; border-radius: 12px; text-align: center; padding: 25px; color: #e5c17c; }
 .cinema-empty h3 { margin: 0; font-size: 24px; color: #e9e2d4; }
 .cinema-empty p { max-width: 340px; color: #b7c1c4; font-size: 12px; line-height: 1.8; }
-.cinema-layout-dock { inset: auto 22px 22px auto; padding: 0; width: min(440px, calc(100vw - 32px)); background: transparent; display: block; }
-.cinema-layout-dock .watch-cinema { max-height: calc(100dvh - 44px); border-radius: 13px; }
-.cinema-layout-dock .cinema-heading { padding: 10px 12px; gap: 8px; }
-.cinema-layout-dock .cinema-emblem { display: none; }
-.cinema-layout-dock .cinema-heading h2 { font-size: 12px; }
-.cinema-layout-dock .cinema-heading .eyebrow { font-size: 7px; margin-bottom: 4px; }
+.cinema-mini-info-toggle, .cinema-mini-info { display: none; }
+.cinema-layout-dock { inset: auto 22px 22px auto; padding: 0; width: min(480px, calc(100vw - 32px)); background: transparent; display: block; }
+.cinema-layout-dock .watch-cinema { max-height: calc(100dvh - 44px); border-radius: 13px; box-shadow: 0 14px 50px #0008, 0 0 0 1px #ffffff04; }
+.cinema-layout-dock .cinema-heading { padding: 5px 8px 5px 12px; gap: 8px; }
+.cinema-layout-dock .cinema-heading h2 { font-size: 12px; letter-spacing: -.01em; }
+.cinema-layout-dock .cinema-emblem, .cinema-layout-dock .cinema-heading .eyebrow { display: none; }
 .cinema-layout-dock .cinema-window-actions { gap: 0; }
-.cinema-layout-dock .cinema-icon { width: 30px; height: 32px; }
+.cinema-layout-dock .cinema-icon { width: 32px; height: 34px; }
 .cinema-layout-dock .cinema-workspace { display: block; }
-.cinema-layout-dock .cinema-main { padding: 9px; }
-.cinema-layout-dock .cinema-library, .cinema-layout-dock .cinema-source-desk, .cinema-layout-dock .cinema-night-tag, .cinema-layout-dock .cinema-screen-intro > p, .cinema-layout-dock .cinema-screen-footnote, .cinema-layout-dock .cinema-time, .cinema-layout-dock .cinema-finished { display: none; }
+.cinema-layout-dock .cinema-main { padding: 0; }
+.cinema-layout-dock .cinema-screen { border: 0; border-radius: 0; width: 100%; }
+.cinema-layout-dock .cinema-library, .cinema-layout-dock .cinema-source-desk, .cinema-layout-dock .cinema-night-tag, .cinema-layout-dock .cinema-screen-intro > p, .cinema-layout-dock .cinema-screen-footnote, .cinema-layout-dock .cinema-finished { display: none; }
 .cinema-layout-dock .cinema-screen-intro { padding: 20px; max-width: 95%; }
 .cinema-layout-dock .cinema-screen h3 { font-size: 20px; margin-bottom: 0; }
 .cinema-layout-dock .cinema-start { margin-top: 15px; padding: 10px; }
-.cinema-layout-dock .cinema-controls { gap: 3px; padding: 8px 0 0; }
-.cinema-layout-dock .cinema-version { order: 3; flex-basis: 100%; justify-content: space-between; margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #ffffff0e; }
-.cinema-layout-dock .cinema-episode-navigation { gap: 0; }
+.cinema-layout-dock .cinema-now-playing { min-height: 30px; gap: 8px; margin: 0 10px; padding: 6px 0 4px; border: 0; }
+.cinema-layout-dock .cinema-now-playing b { font-size: 10px; }
+.cinema-layout-dock .cinema-now-playing small { display: none; }
+.cinema-layout-dock .cinema-time { display: inline; font-size: 9px; letter-spacing: 0; }
+.cinema-layout-dock .cinema-controls { gap: 5px; padding: 0 8px 8px; flex-wrap: nowrap; }
+.cinema-layout-dock .cinema-version { order: 0; flex-basis: auto; justify-content: flex-start; margin: 0; padding: 0; border: 0; }
+.cinema-layout-dock .cinema-version-label, .cinema-layout-dock .cinema-episode-word, .cinema-layout-dock .cinema-details-link { display: none; }
+.cinema-layout-dock .cinema-language { padding: 2px; border-radius: 7px; }
+.cinema-layout-dock .cinema-language button { width: 42px; min-height: 30px; padding: 5px 3px; gap: 3px; font-size: 10px; }
+.cinema-layout-dock .cinema-episode-navigation { gap: 0; min-width: 0; }
 .cinema-layout-dock .cinema-episode-navigation label { font-size: 10px; gap: 4px; }
-.cinema-layout-dock .cinema-episode-navigation input { width: 53px; }
-.cinema-layout-dock .cinema-episode-navigation label > span, .cinema-layout-dock .cinema-details-link { display: none; }
-.cinema-layout-dock .cinema-mark { font-size: 10px !important; padding: 8px; }
-.cinema-layout-dock .cinema-now-playing { padding: 10px 0; }
+.cinema-layout-dock .cinema-episode-navigation input { width: 47px; padding: 6px 3px; height: 32px; appearance: textfield; }
+.cinema-layout-dock .cinema-episode-navigation input::-webkit-inner-spin-button { appearance: none; margin: 0; }
+.cinema-layout-dock .cinema-episode-navigation .cinema-episode-total { display: inline; white-space: nowrap; }
+.cinema-layout-dock .cinema-mark { flex-shrink: 0; width: 32px; min-height: 34px; padding: 7px; }
+.cinema-layout-dock .cinema-mark-text { display: none; }
+.cinema-layout-dock .cinema-controls:has(.cinema-mark.is-bulk) { flex-wrap: wrap; }
+.cinema-layout-dock .cinema-mark.is-bulk { order: 4; flex-basis: 100%; }
+.cinema-layout-dock .cinema-mark.is-bulk .cinema-mark-text { display: inline; }
+.cinema-layout-dock .cinema-episode-navigation.is-film > button { display: none; }
+.cinema-layout-dock .cinema-mini-info-toggle { display: inline-flex; color: #a8b2b2; }
+.cinema-layout-dock .cinema-mini-info-toggle.is-active { color: var(--cinema-gold); background: #e5c17c0c; border-color: #e5c17c28; }
+.cinema-layout-dock .cinema-mini-info { display: block; border-top: 1px solid #ffffff12; padding: 13px 14px; background: #0d1114; max-height: min(230px, 35dvh); overflow: auto; scrollbar-width: thin; }
+.cinema-mini-info strong { display: block; color: #eee4d2; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.cinema-mini-info p { font-size: 11px; line-height: 1.6; color: #b9c1bf; margin-top: 4px; overflow-wrap: anywhere; }
+.cinema-mini-info dl { display: grid; gap: 8px; margin: 12px 0; font-size: 10px; line-height: 1.5; }
+.cinema-mini-info dl > div { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px; }
+.cinema-mini-info dt { color: #909a9c; }
+.cinema-mini-info dd { margin: 0; color: #c5c9c5; overflow-wrap: anywhere; }
+.cinema-mini-info .cinema-text-button { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; }
+.cinema-layout-dock .cinema-ahead { padding: 1px 12px 9px; font-size: 9px; }
+@media (max-width: 359px) {
+  .cinema-layout-dock .cinema-episode-navigation .cinema-episode-total { display: none; }
+  .cinema-layout-dock .cinema-controls { gap: 3px; padding-right: 6px; padding-left: 6px; }
+  .cinema-layout-dock .cinema-episode-navigation .cinema-icon { width: 28px; }
+  .cinema-layout-dock .cinema-now-playing em { font-size: 8px; }
+}
 .cinema-window-body { margin: 0; background: #111316; min-width: 0; }
 .cinema-layout-window { padding: 0; background: #111316; }
 .cinema-layout-window .watch-cinema { width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; border: 0; }
@@ -214,7 +244,7 @@ body.cinema-modal-open { overflow: hidden !important; }
   .cinema-episode-navigation { gap: 0; }
   .cinema-episode-navigation label { font-size: 10px; gap: 3px; }
   .cinema-episode-navigation input { width: 55px; }
-  .cinema-episode-navigation label > span { display: none; }
+  .cinema-episode-navigation .cinema-episode-total { display: none; }
   .cinema-mark { font-size: 10px !important; padding: 8px; }
   .cinema-details-link { display: none; }
   .cinema-source-tabs { gap: 6px; }

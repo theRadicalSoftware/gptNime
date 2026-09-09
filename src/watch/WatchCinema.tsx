@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Link2, LoaderCircle, Maximize2, Minimize2, MonitorUp, Play, RotateCcw, Search, Subtitles, X } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Info, Link2, LoaderCircle, Maximize2, Minimize2, MonitorUp, Play, RotateCcw, Search, Subtitles, X } from 'lucide-react'
 import type { Language, WatchRequest, WatchTitle } from './watchState'
 import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, readWatchState, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
 import { episodePreparation, prefetchEpisode, scheduleEpisodePreparation } from './watchPreparation'
@@ -188,7 +188,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
       <section id="anime-channel-panel" className="watch-cinema" role="dialog" aria-modal={layout === 'cinema' ? true : undefined} aria-label="GPTNime cinema">
         <header className="cinema-heading">
           <span className="cinema-emblem"><Clapperboard size={22} /></span>
-          <div className="cinema-heading-copy"><span className="eyebrow">GPTNime cinema</span><h2>{entry?.title || 'A good night for anime'}</h2></div>
+          <div className="cinema-heading-copy"><span className="eyebrow">GPTNime cinema</span><h2 title={entry?.title}>{entry?.title || 'A good night for anime'}</h2></div>
           <div className="cinema-window-actions">
             {layout === 'window' ? <button className="cinema-icon" aria-label="Pop player back in" title="Pop in" onClick={popIn}><MonitorUp size={18} /></button> : <>
               <button className="cinema-icon" aria-label={layout === 'dock' ? 'Expand cinema' : 'Dock mini-player'} title={layout === 'dock' ? 'Expand cinema' : 'Keep watching while browsing'} onClick={() => setLayout(layout === 'dock' ? 'cinema' : 'dock')}>{layout === 'dock' ? <Maximize2 size={18} /> : <Minimize2 size={18} />}</button>
@@ -224,6 +224,9 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   entry: WatchTitle; episode: number; intent: number; preparation?: Preparation; onComplete: Props['onComplete']; onEpisode: (episode: number, preparation?: Preparation) => void; onDetails: () => void; onRevealSource: () => void
 }) {
   const [settings, setSettings] = useState(readWatchState)
+  const [infoOpen, setInfoOpen] = useState(false)
+  const infoId = useId()
+  const infoButtonRef = useRef<HTMLButtonElement>(null)
   const [tab, setTab] = useState<'wco' | 'file' | 'url'>(settings.sourceTab)
   const [source, setSource] = useState<Source | null>(null)
   const [sourceGeneration, setSourceGeneration] = useState(0)
@@ -272,6 +275,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const itemLabel = movie ? 'movie' : 'episode'
   const screenError = !source && tab === 'wco' && !!error
   const watched = episode <= entry.progress
+  const markLabel = watched ? 'Watched' : episode > entry.progress + 1 ? `Mark through ep ${episode}` : movie ? 'Mark movie watched' : 'Mark watched'
   const nextAvailable = !movie && (!entry.episodesTotal || episode < entry.episodesTotal)
   const metadataTitle = entry.episodeList?.find((item) => item.number === episode)?.title
   const pageKey = `${entry.anilistId}:${episode}:${settings.language}`
@@ -598,10 +602,10 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
       </div>}
     </div>
     <div className="cinema-now-playing"><span><b>{episodeLabel(entry, episode)}</b>{watched && <em><Check size={13} /> Watched</em>}{source && <small title={source.name}>{source.name}</small>}</span><span className="cinema-time">{source ? `${clockLabel(currentTime)} / ${clockLabel(duration)}` : preparing ? providerPhase === 'verification' ? 'WAITING FOR VERIFICATION' : 'PREPARING YOUR VIDEO' : movie ? 'MOVIE NIGHT' : 'READY WHEN YOU ARE'}</span></div>
-    <div className="cinema-controls">
-      <div className="cinema-episode-navigation">
+    <div className="cinema-controls" onKeyDown={(event) => { if (infoOpen && event.key === 'Escape' && event.currentTarget.closest('.cinema-layout-dock')) { event.stopPropagation(); event.preventDefault(); setInfoOpen(false) } }}>
+      <div className={`cinema-episode-navigation${movie ? ' is-film' : ''}`}>
         <button className="cinema-icon" aria-label="Previous episode in cinema" disabled={episode <= 1 || movie} onClick={() => onEpisode(episode - 1)}><ChevronLeft size={18} /></button>
-        {movie ? <span className="cinema-feature"><Film size={16} /> Feature film</span> : <label>Episode <input aria-label="Cinema episode number" type="number" min="1" max={entry.episodesTotal || undefined} key={episode} defaultValue={episode} onBlur={(event) => { const value = Number(event.currentTarget.value); if (Number.isInteger(value) && value >= 1 && (!entry.episodesTotal || value <= entry.episodesTotal)) { if (value !== episode) onEpisode(value) } else event.currentTarget.value = String(episode) }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /><span>{entry.episodesTotal ? `of ${entry.episodesTotal}` : ''}</span></label>}
+        {movie ? <span className="cinema-feature"><Film size={16} /> Feature film</span> : <label><span className="cinema-episode-word">Episode</span><input aria-label="Cinema episode number" type="number" min="1" max={entry.episodesTotal || undefined} key={episode} defaultValue={episode} onBlur={(event) => { const value = Number(event.currentTarget.value); if (Number.isInteger(value) && value >= 1 && (!entry.episodesTotal || value <= entry.episodesTotal)) { if (value !== episode) onEpisode(value) } else event.currentTarget.value = String(episode) }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /><span className="cinema-episode-total">{entry.episodesTotal ? `of ${entry.episodesTotal}` : ''}</span></label>}
         <button className="cinema-icon" aria-label="Next episode in cinema" disabled={!nextAvailable} onClick={() => onEpisode(episode + 1)}><ChevronRight size={18} /></button>
       </div>
       {(tab === 'wco' || source?.provider === 'wco') && <div className="cinema-version">
@@ -613,9 +617,17 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
           </button>)}
         </div>
       </div>}
-      <button className="cinema-button cinema-mark" disabled={watched} onClick={() => { markedRef.current = true; onComplete(entry.id, episode) }}><Check size={16} />{watched ? 'Watched' : episode > entry.progress + 1 ? `Mark through ep ${episode}` : movie ? 'Mark movie watched' : 'Mark watched'}</button>
+      <button className={`cinema-button cinema-mark${!watched && episode > entry.progress + 1 ? ' is-bulk' : ''}`} aria-label={markLabel} title={markLabel} disabled={watched} onClick={() => { markedRef.current = true; onComplete(entry.id, episode) }}><Check size={16} /><span className="cinema-mark-text">{markLabel}</span></button>
       <button className="cinema-icon cinema-details-link" aria-label="Open title details" title="Title details" onClick={onDetails}><ExternalLink size={16} /></button>
+      <button ref={infoButtonRef} className={`cinema-icon cinema-mini-info-toggle${infoOpen ? ' is-active' : ''}`} aria-label="Episode information" title="Episode information" aria-expanded={infoOpen} aria-controls={infoId} onClick={() => setInfoOpen((open) => !open)}><Info size={17} /></button>
     </div>
+    {infoOpen && <aside id={infoId} className="cinema-mini-info" aria-label="Episode information" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); event.preventDefault(); setInfoOpen(false); infoButtonRef.current?.focus() } }}>
+      <strong>{entry.title}</strong>
+      {metadataTitle && <p>{metadataTitle}</p>}
+      <dl><div><dt>{movie ? 'Film' : 'Episode'}</dt><dd>{movie ? 'Feature film' : `${episode}${entry.episodesTotal ? ` of ${entry.episodesTotal}` : ''}`} · {watched ? 'Watched' : 'Not marked watched'}</dd></div><div><dt>Source</dt><dd>{source?.name || (tab === 'wco' ? 'WCO' : tab === 'file' ? 'Your files' : 'Video URL')}{!source && ' · Not playing'}</dd></div></dl>
+      {notice && <p className="cinema-mini-notice">{notice}</p>}
+      <button className="cinema-text-button" onClick={onDetails}>Title details<ExternalLink size={12} /></button>
+    </aside>}
     {!preparing && tab === 'wco' && ahead?.key === aheadKey && <div className="cinema-ahead" role="status">{ahead.expiresAt ? <Check size={12} /> : <LoaderCircle size={12} className="cinema-version-spinner" />}<span>{ahead.expiresAt ? movie ? 'Movie prepared' : `Episode ${ahead.episode} prepared` : movie ? 'Getting your movie ready in the background…' : `Getting episode ${ahead.episode} ready in the background…`}</span></div>}
     {ended && <div className="cinema-finished" role="status"><span><Check size={17} />{nextAvailable ? 'Ready for the next episode?' : 'That’s a wrap. Thanks for watching.'}</span>{nextAvailable && <button className="cinema-button primary" onClick={() => onEpisode(episode + 1)}>Episode {episode + 1}<ChevronRight size={16} /></button>}</div>}
     <div className="cinema-source-desk">
