@@ -22,12 +22,14 @@ export async function localPlaybackBrowser(): Promise<'chrome' | 'brave'> {
   return 'chrome'
 }
 type Bookmark = { time: number; duration: number; updatedAt: number }
+type LastWatch = { anilistId: number; episode: number; language: Language; updatedAt: number; finished: boolean }
 type WatchState = {
   language: Language
   sourceTab: 'wco' | 'file' | 'url'
   autoMark: boolean
   pages: Record<string, string>
   bookmarks: Record<string, Bookmark>
+  lastWatch?: LastWatch
 }
 
 export const WATCH_STORAGE_KEY = 'gptnime-cinema-v1'
@@ -71,6 +73,15 @@ export function firstEpisode(entry: WatchTitle): number {
   return Math.max(1, entry.progress + 1)
 }
 
+export function recentWatch(entries: WatchTitle[]) {
+  const state = readWatchState()
+  const last = state.lastWatch
+  if (state.sourceTab !== 'wco' || !last || last.finished || Date.now() - last.updatedAt > 24 * 60 * 60_000) return null
+  const entry = entries.find((entry) => entry.anilistId === last.anilistId)
+  if (!entry || (entry.episodesTotal && last.episode > entry.episodesTotal) || (entry.format === 'MOVIE' && last.episode !== 1)) return null
+  return { entry, episode: last.episode, language: state.language }
+}
+
 export function episodeLabel(entry: WatchTitle, episode: number): string {
   return entry.format === 'MOVIE' ? 'Feature film' : `Episode ${episode}`
 }
@@ -100,7 +111,10 @@ export function readWatchState(): WatchState {
       const item = value as Bookmark
       return item && Number.isFinite(item.time) && item.time >= 0 && Number.isFinite(item.duration) && item.duration > 0 && Number.isFinite(item.updatedAt)
     }).sort((a, b) => (b[1] as Bookmark).updatedAt - (a[1] as Bookmark).updatedAt).slice(0, 200)) as Record<string, Bookmark>
-    return { language: raw.language === 'dub' ? 'dub' : 'sub', sourceTab: raw.sourceTab === 'file' || raw.sourceTab === 'url' ? raw.sourceTab : 'wco', autoMark: raw.autoMark !== false, pages, bookmarks }
+    const last = raw.lastWatch
+    const lastWatch: LastWatch | undefined = last && Number.isInteger(last.anilistId) && last.anilistId > 0 && Number.isInteger(last.episode) && last.episode > 0 && last.episode <= 100_000 && ['sub', 'dub'].includes(last.language) && Number.isFinite(last.updatedAt) && last.updatedAt <= Date.now() && typeof last.finished === 'boolean'
+      ? { anilistId: last.anilistId, episode: last.episode, language: last.language, updatedAt: last.updatedAt, finished: last.finished } : undefined
+    return { language: raw.language === 'dub' ? 'dub' : 'sub', sourceTab: raw.sourceTab === 'file' || raw.sourceTab === 'url' ? raw.sourceTab : 'wco', autoMark: raw.autoMark !== false, pages, bookmarks, lastWatch }
   } catch { return empty }
 }
 

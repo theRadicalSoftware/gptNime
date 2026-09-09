@@ -1,7 +1,8 @@
 import { access } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
-import type { Page } from 'playwright'
+import type { Page, Response } from 'playwright'
 import { backgroundRunner, WcoBrowser, WcoBrowserError, wcoProfileDirectory } from './wcoBrowser'
 import { PreparationBusy, WcoPreparation } from './wcoPreparation'
 
@@ -46,18 +47,19 @@ export function videoSource(value: string): boolean {
   } catch { return false }
 }
 
-type ResolveRequest = { url?: string; titles: string[]; episode: number; language: 'sub' | 'dub'; movie: boolean; choose: boolean; refresh?: boolean }
+type ResolveRequest = { url?: string; titles: string[]; episode: number; language: 'sub' | 'dub'; movie: boolean; choose: boolean; refresh?: boolean; intent?: boolean }
 type Link = { url: string; title: string }
 type PlaybackSource = {
   kind: 'source'; source: string; pageUrl: string; seriesPage?: string; title: string; language: 'sub' | 'dub'; notice: string
   previousPage: string | null; nextPage: string | null
+  playbackId?: string; cached?: boolean
 }
 type ResolveResult = PlaybackSource | { kind: 'choices'; message: string; choices: (Link & { language?: 'sub' | 'dub' })[] }
 
 // Briefly reuse an already prepared episode when returning to it or switching
 // versions. These signed sources stay in server memory and never cross browsers.
 export class RecentSources {
-  private entries = new Map<string, { result: PlaybackSource; expires: number; timer: ReturnType<typeof setTimeout> }>()
+  private entries = new Map<string, { result: PlaybackSource; expires: number; created: number; timer: ReturnType<typeof setTimeout> }>()
   constructor(private now: () => number = Date.now) {}
   private forget(key: string) {
     clearTimeout(this.entries.get(key)?.timer)
@@ -81,8 +83,24 @@ export class RecentSources {
     this.forget(key)
     const timer = setTimeout(() => this.entries.delete(key), 90_000)
     timer.unref()
-    this.entries.set(key, { result, expires: this.now() + 90_000, timer })
+    result.playbackId = randomUUID()
+    this.entries.set(key, { result, expires: this.now() + 90_000, created: this.now(), timer })
     if (this.entries.size > 8) this.forget(this.entries.keys().next().value!)
+  }
+  retain(playbackId: string): boolean {
+    for (const [key, entry] of this.entries) {
+      if (entry.result.playbackId !== playbackId) continue
+      // A playing cinema can keep its own source ready for refresh. No revival
+      // after expiry, unlimited retention, or sharing between browser profiles.
+      const now = this.now()
+      if (entry.expires <= now || entry.created + 4 * 60 * 60_000 <= now) { this.forget(key); return false }
+      clearTimeout(entry.timer)
+      entry.expires = Math.min(now + 90_000, entry.created + 4 * 60 * 60_000)
+      entry.timer = setTimeout(() => this.entries.delete(key), entry.expires - now)
+      entry.timer.unref()
+      return true
+    }
+    return false
   }
 }
 const recentSources = new WeakMap<WcoBrowser, RecentSources>()
@@ -302,7 +320,7 @@ export async function resolveWco(request: ResolveRequest, signal: AbortSignal, s
   const pageUrl = remembered?.pageUrl || request.url
   if (!request.choose && pageUrl) {
     const cached = cache.get(pageUrl, request.episode, remembered?.language || request.language, request.movie, request.refresh)
-    if (cached) return cached
+    if (cached) return { ...cached, cached: true }
   }
   for (let attempt = 0; ; attempt++) {
     const revision = session.revision
@@ -327,6 +345,11 @@ async function prepareWco(request: ResolveRequest, signal: AbortSignal, session:
   const revision = session.revision
   signal.throwIfAborted()
   session.setPreparing(true)
+  const acceptedMedia = new Set<string>()
+  const observeMedia = (response: Response) => {
+    if ([200, 206].includes(response.status()) && /^video\//i.test(response.headers()['content-type'] || '') && videoSource(response.url())) acceptedMedia.add(response.url())
+  }
+  page.on('response', observeMedia)
   // Cancellation releases the work tab promptly; Chrome's profile survives it.
   let cancellation: Promise<void> | undefined
   const abort = () => { cancellation = session.cancel(page) }
@@ -424,7 +447,7 @@ async function prepareWco(request: ResolveRequest, signal: AbortSignal, session:
           node.muted = true
           return { source: node.currentSrc, ready: node.readyState }
         }).catch(() => null)
-        if (media && videoSource(media.source) && media.ready >= 1) {
+        if (media && videoSource(media.source) && (media.ready >= 1 || acceptedMedia.has(media.source))) {
           await video.evaluate((node: HTMLVideoElement) => node.pause()).catch(() => {})
           const links = request.movie ? [] : await episodeLinks(page, false)
           const previous = matchingEpisodes(links, request.episode - 1, language)
@@ -439,7 +462,7 @@ async function prepareWco(request: ResolveRequest, signal: AbortSignal, session:
         const play = frame.getByRole('button', { name: 'Play Video', exact: true })
         if (await play.isVisible().catch(() => false)) await play.click({ timeout: 1000 }).catch(() => {})
       }
-      await page.waitForTimeout(350)
+      await page.waitForTimeout(150)
     }
     throw new PlaybackError('WCO did not provide a playable source in time. Try again and complete any verification while its window is open. Premium-only videos need the provider’s own access.')
   } catch (error) {
@@ -449,6 +472,7 @@ async function prepareWco(request: ResolveRequest, signal: AbortSignal, session:
     if (checkpoint && revision === session.revision && !(error instanceof PlaybackError && error.code === 'verification')) resumes.set(key, { ...checkpoint, reload: true })
     throw error
   } finally {
+    page.removeListener('response', observeMedia)
     signal.removeEventListener('abort', abort)
     await cancellation?.catch(() => {})
     session.setPreparing(false)
@@ -469,19 +493,23 @@ function json(res: ServerResponse, status: number, body: object) {
   res.end(JSON.stringify(body))
 }
 
-async function readRequest(req: IncomingMessage): Promise<ResolveRequest> {
+async function readJson(req: IncomingMessage) {
   let body = ''
   for await (const chunk of req) {
     body += String(chunk)
     if (body.length > 4096) throw new Error('Request is too large.')
   }
-  const raw = JSON.parse(body)
+  return JSON.parse(body)
+}
+
+async function readRequest(req: IncomingMessage): Promise<ResolveRequest> {
+  const raw = await readJson(req)
   const url = episodePage(raw?.url)
   const titles = Array.isArray(raw?.titles) ? raw.titles : []
-  if ((raw?.url && !url) || (!url && !titles.length) || titles.length > 8 || titles.some((title: unknown) => typeof title !== 'string' || title.trim().length < 2 || title.length > 200) || !Number.isInteger(raw?.episode) || raw.episode < 1 || raw.episode > 100_000 || !['sub', 'dub'].includes(raw.language) || typeof raw.movie !== 'boolean' || (raw.choose !== undefined && typeof raw.choose !== 'boolean') || (raw.refresh !== undefined && typeof raw.refresh !== 'boolean')) {
+  if ((raw?.url && !url) || (!url && !titles.length) || titles.length > 8 || titles.some((title: unknown) => typeof title !== 'string' || title.trim().length < 2 || title.length > 200) || !Number.isInteger(raw?.episode) || raw.episode < 1 || raw.episode > 100_000 || !['sub', 'dub'].includes(raw.language) || typeof raw.movie !== 'boolean' || (raw.choose !== undefined && typeof raw.choose !== 'boolean') || (raw.refresh !== undefined && typeof raw.refresh !== 'boolean') || (raw.intent !== undefined && typeof raw.intent !== 'boolean')) {
     throw new Error('Use a valid title and episode selection.')
   }
-  return { url: url || undefined, titles: titles.map((title: string) => title.trim()), episode: raw.episode, language: raw.language, movie: raw.movie, choose: raw.choose === true, refresh: raw.refresh === true }
+  return { url: url || undefined, titles: titles.map((title: string) => title.trim()), episode: raw.episode, language: raw.language, movie: raw.movie, choose: raw.choose === true, refresh: raw.refresh === true, intent: raw.intent === true }
 }
 
 export function wcoPlugin(): Plugin {
@@ -495,7 +523,7 @@ export function wcoPlugin(): Plugin {
   const shutdown = async () => { await preparation.close(); await Promise.all(Object.values(providers).map(({ session }) => session.close())) }
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     const path = req.url?.split('?')[0]
-    if (path !== '/api/wco/status' && path !== '/api/wco/resolve' && path !== '/api/wco/prefetch' && path !== '/api/wco/focus') { next(); return }
+    if (path !== '/api/wco/status' && path !== '/api/wco/resolve' && path !== '/api/wco/prefetch' && path !== '/api/wco/focus' && path !== '/api/wco/retain') { next(); return }
     if (!isLocal(req)) { json(res, 403, { error: 'The WCO connector is available only on this computer.' }); return }
     const browser = providerBrowser(req.headers['x-wco-browser'])
     if (!browser) { json(res, 400, { error: 'Choose a supported local playback browser.' }); return }
@@ -504,13 +532,18 @@ export function wcoPlugin(): Plugin {
       const available = await access(browserPath).then(() => true, () => false)
       json(res, 200, { available, browser, automatic: true, persistent: true, hiddenPreparation: !!await backgroundRunner(), ...preparation.status }); return
     }
-    if (!['/api/wco/resolve', '/api/wco/prefetch', '/api/wco/focus'].includes(path) || req.method !== 'POST') { json(res, 405, { error: 'Method not allowed.' }); return }
+    if (!['/api/wco/resolve', '/api/wco/prefetch', '/api/wco/focus', '/api/wco/retain'].includes(path) || req.method !== 'POST') { json(res, 405, { error: 'Method not allowed.' }); return }
     if (req.headers.origin !== `http://${req.headers.host}` || !req.headers['content-type']?.startsWith('application/json')) {
       json(res, 403, { error: 'Start playback from the local gptNime cinema.' }); return
     }
     if (path === '/api/wco/focus') {
       const shown = await session.show().catch(() => false)
       json(res, shown ? 200 : 409, shown ? { shown: true } : { error: 'Start playback to open the WCO session.' }); return
+    }
+    if (path === '/api/wco/retain') {
+      const body = await readJson(req).catch(() => null)
+      if (typeof body?.playbackId !== 'string' || !/^[a-f0-9-]{36}$/i.test(body.playbackId)) { json(res, 400, { error: 'Use the current playback session.' }); return }
+      json(res, 200, { retained: recentSources.get(session)?.retain(body.playbackId) || false }); return
     }
     let request: ResolveRequest
     try { request = await readRequest(req) } catch { json(res, 400, { error: 'Use a valid title and episode selection.' }); return }
@@ -524,7 +557,7 @@ export function wcoPlugin(): Plugin {
     try {
       const key = `${browser}:${requestKey(request)}`
       const work = (signal: AbortSignal, report: ReportPhase) => resolveWco(request, signal, session, resumes, report)
-      const result = await (background ? preparation.prefetch(key, work) : preparation.resolve(key, work, controller.signal, requestId, request.refresh))
+      const result = await (background ? preparation.prefetch(key, work, request.intent) : preparation.resolve(key, work, controller.signal, requestId, request.refresh))
       json(res, 200, background ? { ready: result.kind === 'source', expiresAt: result.kind === 'source' ? recentSources.get(session)?.expiresAt(result, request.episode, request.movie) || 0 : 0 } : result)
     } catch (error) {
       if (error instanceof PreparationBusy) { json(res, 409, { error: 'Another episode is being prepared. Cancel it or wait for it to finish.' }); return }

@@ -2,8 +2,8 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Info, Link2, LoaderCircle, Maximize2, Minimize2, MonitorUp, Play, RotateCcw, Search, Subtitles, X } from 'lucide-react'
 import type { Language, WatchRequest, WatchTitle } from './watchState'
-import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, readWatchState, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
-import { episodePreparation, prefetchEpisode, scheduleEpisodePreparation } from './watchPreparation'
+import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, readWatchState, recentWatch, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
+import { episodePreparation, prefetchEpisode, retainPlayback, scheduleEpisodePreparation } from './watchPreparation'
 import './WatchCinema.css'
 
 type Props = {
@@ -41,8 +41,9 @@ function moveCinema(host: HTMLElement, destination: HTMLElement, blocked: () => 
 
 export default function WatchCinema({ entries, request, onComplete, onDetails, onClose }: Props) {
   const [selection, setSelection] = useState<Selection>(() => {
-    const entry = entries.find((item) => item.id === request?.id) || entries[0]
-    return { id: entry?.id || '', episode: request?.episode || (entry ? firstEpisode(entry) : 1), intent: request ? 1 : 0 }
+    const last = request ? null : recentWatch(entries)
+    const entry = entries.find((item) => item.id === request?.id) || last?.entry || entries[0]
+    return { id: entry?.id || '', episode: request?.episode || last?.episode || (entry ? firstEpisode(entry) : 1), intent: request ? 1 : 0 }
   })
   const [layout, setLayout] = useState<Layout>('cinema')
   const [query, setQuery] = useState('')
@@ -218,7 +219,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
   )
 }
 
-type Source = { url: string; name: string; key: string; local: boolean; autoplay?: boolean; provider?: 'wco' }
+type Source = { url: string; name: string; key: string; local: boolean; autoplay?: boolean; provider?: 'wco'; language?: Language; playbackId?: string; cached?: boolean }
 
 function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpisode, onDetails, onRevealSource }: {
   entry: WatchTitle; episode: number; intent: number; preparation?: Preparation; onComplete: Props['onComplete']; onEpisode: (episode: number, preparation?: Preparation) => void; onDetails: () => void; onRevealSource: () => void
@@ -249,6 +250,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const [playbackPage, setPlaybackPage] = useState('')
   const [matches, setMatches] = useState<Match[]>([])
   const autoplayAttempted = useRef(false)
+  const cachedRetry = useRef('')
   const resolutionRef = useRef<AbortController | null>(null)
   const providerBrowserRef = useRef<'chrome' | 'brave'>('chrome')
   const [speed, setSpeed] = useState(1)
@@ -294,10 +296,10 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     const timer = window.setTimeout(() => {
       aheadAttempted.current.add(attempt)
       setAhead({ key: aheadKey, episode: aheadEpisode, expiresAt: 0 })
-      void prefetchEpisode(entryRef.current, aheadEpisode, settings.language, controller.signal).then((expiresAt) => {
+      void prefetchEpisode(entryRef.current, aheadEpisode, settings.language, controller.signal, !source).then((expiresAt) => {
         if (!controller.signal.aborted) setAhead(expiresAt ? { key: aheadKey, episode: aheadEpisode, expiresAt } : null)
       }).catch(() => { if (!controller.signal.aborted) setAhead(null) })
-    }, 700)
+    }, source ? 700 : 0)
     return () => {
       window.clearTimeout(timer); controller.abort()
       setAhead((previous) => previous?.key === aheadKey && !previous.expiresAt ? null : previous)
@@ -309,6 +311,10 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     const timer = window.setTimeout(() => setAhead(null), Math.max(0, ahead.expiresAt - Date.now()))
     return () => window.clearTimeout(timer)
   }, [ahead])
+
+  useEffect(() => {
+    if (playing && source?.provider === 'wco' && source.playbackId) return retainPlayback(source.playbackId, providerBrowserRef.current)
+  }, [playing, source?.provider, source?.playbackId])
 
   useEffect(() => { setPlaybackPage(savedPage || '') }, [savedPage])
 
@@ -359,8 +365,11 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     if (!video || video.dataset.cinemaMoving || !media || video.getAttribute('src') !== media.url || !Number.isFinite(video.duration) || video.duration <= 0) return
     const state = readWatchState()
     state.bookmarks[bookmarkPrefix + media.key] = { time: video.ended ? 0 : video.currentTime, duration: video.duration, updatedAt: Date.now() }
+    if (media.provider === 'wco' && !video.error && video.currentTime > 0) {
+      state.lastWatch = { anilistId: entry.anilistId, episode, language: media.language || state.language, updatedAt: Date.now(), finished: video.ended }
+    }
     writeWatchState(state)
-  }, [bookmarkPrefix])
+  }, [bookmarkPrefix, entry.anilistId, episode])
 
   const bindVideo = useCallback((node: HTMLVideoElement | null) => {
     if (!node) saveBookmark()
@@ -403,7 +412,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     if (subtitleUrlRef.current) URL.revokeObjectURL(subtitleUrlRef.current)
     sourceRef.current = null
     subtitleUrlRef.current = null
-    setSource(null); setSubtitle(null); setMediaError(''); setLoading(false); setEnded(false); setCurrentTime(0); setDuration(0)
+    setSource(null); setSubtitle(null); setMediaError(''); setLoading(false); setPlaying(false); setEnded(false); setCurrentTime(0); setDuration(0)
     if (fileRef.current) fileRef.current.value = ''
     if (subtitleRef.current) subtitleRef.current.value = ''
   }
@@ -482,12 +491,26 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
       if (episode > 1 && typeof result.previousPage === 'string' && wcoPage(result.previousPage)) pages[`${entry.anilistId}:${episode - 1}:${resolvedLanguage}`] = result.previousPage
       if (typeof result.nextPage === 'string' && wcoPage(result.nextPage)) pages[`${entry.anilistId}:${episode + 1}:${resolvedLanguage}`] = result.nextPage
       updateSettings({ pages, language: resolvedLanguage })
-      chooseSource({ url: videoUrl, name: result.title || `${entry.title} · ${episodeLabel(entry, episode)}`, key: sourceFingerprint(resolvedPage), local: false, autoplay: true, provider: 'wco' })
+      chooseSource({ url: videoUrl, name: result.title || `${entry.title} · ${episodeLabel(entry, episode)}`, key: sourceFingerprint(resolvedPage), local: false, autoplay: true, provider: 'wco', language: resolvedLanguage, playbackId: typeof result.playbackId === 'string' ? result.playbackId : undefined, cached: result.cached === true && !options.refresh })
       if (result.notice) setNotice(result.notice)
     } catch (error) {
       if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : 'WCO could not prepare this episode. Try again.'); onRevealSource() }
     } finally {
       if (resolutionRef.current === controller) { resolutionRef.current = null; setPreparing(false) }
+    }
+  }
+
+  const handleMediaError = () => {
+    setPlaying(false); setLoading(false)
+    const identity = source?.playbackId || source?.url
+    if (source?.provider === 'wco' && source.cached && identity && cachedRetry.current !== identity) {
+      cachedRetry.current = identity
+      setMediaError('Refreshing this video…')
+      void prepareEpisode({ refresh: true }).finally(() => {
+        if (sourceRef.current === source) setMediaError(`WCO’s video could not load in this browser. Retry this ${itemLabel} to prepare a fresh source for your browser.`)
+      })
+    } else {
+      setMediaError(source?.provider === 'wco' ? `WCO’s video could not load in this browser. Retry this ${itemLabel} to prepare a fresh source for your browser.` : 'This video could not be played. Check that the link points to a supported video file, or try an MP4 / WebM file.')
     }
   }
 
@@ -586,7 +609,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
             if (video && source.autoplay && !autoplayAttempted.current && !video.dataset.cinemaMoving) {
               startVideo(video)
             }
-          }} onWaiting={() => setLoading(true)} onPlaying={() => { setPlaying(true); setLoading(false); setMediaError(''); setEnded(false) }} onTimeUpdate={handleTime} onPause={() => { setPlaying(false); saveBookmark() }} onEnded={() => { handleTime(); saveBookmark(); setEnded(true) }} onError={() => { setPlaying(false); setLoading(false); setMediaError(source.provider === 'wco' ? `WCO’s video could not load in this browser. Retry this ${itemLabel} to prepare a fresh source for your browser.` : 'This video could not be played. Check that the link points to a supported video file, or try an MP4 / WebM file.') }}>
+          }} onWaiting={() => setLoading(true)} onPlaying={() => { setPlaying(true); setLoading(false); setMediaError(''); setEnded(false) }} onTimeUpdate={handleTime} onPause={() => { setPlaying(false); saveBookmark() }} onEnded={() => { handleTime(); saveBookmark(); setEnded(true) }} onError={handleMediaError}>
           {subtitle && <track key={subtitle.url} src={subtitle.url} kind="subtitles" srcLang="en" label={subtitle.name} default onError={() => setError('These subtitles could not be loaded. Choose a valid WebVTT (.vtt) file.')} />}
         </video>
         {loading && !mediaError && <span className="cinema-loading" role="status">Loading video…</span>}

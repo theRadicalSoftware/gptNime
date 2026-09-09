@@ -132,7 +132,7 @@ try {
   assert.equal(result.source, mediaUrl)
   assert.equal(reopened.url(), 'about:blank')
   assert.equal(episodeLoads, 2)
-  assert.deepEqual(await resolveWco(request, new AbortController().signal, session, checkpoints, () => {}), result)
+  assert.deepEqual(await resolveWco(request, new AbortController().signal, session, checkpoints, () => {}), { ...result, cached: true })
   assert.equal(episodeLoads, 2, 'Returning to a recent episode avoids another provider preparation')
   await resolveWco({ ...request, refresh: true }, new AbortController().signal, session, checkpoints, () => {})
   assert.equal(episodeLoads, 3, 'Reload bypasses the recent source')
@@ -205,6 +205,41 @@ try {
   assert.equal(reopened.url(), 'about:blank')
   session.show = show
   console.log('✓ Movies resolve automatically, surface access gates promptly, retry with the saved session and never inherit TV episode neighbors')
+
+  await context.unrouteAll({ behavior: 'wait' })
+  const earlyPage = 'https://www.wco.tv/early-fixture-episode-1-english-subbed'
+  await context.route('https://www.wco.tv/**', route => route.fulfill({ contentType: 'text/html', body: '<title>Early Fixture Episode 1 English Subbed</title><iframe src="https://embed.wcostream.com/early-fixture"></iframe>' }))
+  // Simulated metadata delay only in this intercepted fixture: exercise the
+  // successful-response path without relying on the ordinary readyState path.
+  await context.route('https://embed.wcostream.com/**', route => route.fulfill({ contentType: 'text/html', body: `<script>Object.defineProperty(HTMLMediaElement.prototype, 'readyState', { get: () => 0 })</script><video src="${mediaUrl}" preload="metadata"></video>` }))
+  const earlyRequest = { url: earlyPage, titles: ['Early Fixture'], episode: 1, language: 'sub', movie: false, choose: false, refresh: true }
+  await context.route(mediaUrl, route => route.fulfill({ contentType: 'video/webm', body: media }))
+  const earlyController = new AbortController()
+  const earlyTimeout = setTimeout(() => earlyController.abort(), 6000)
+  try {
+    assert.equal((await resolveWco(earlyRequest, earlyController.signal, session, new Map(), () => {})).source, mediaUrl)
+    assert.equal(earlyController.signal.aborted, false)
+  } finally { clearTimeout(earlyTimeout) }
+  console.log('✓ Successful video response headers allow handoff before provider metadata decoding finishes')
+  await context.unroute(mediaUrl)
+  for (const [status, contentType] of [[200, 'text/html'], [404, 'video/webm']]) {
+    await context.route(mediaUrl, route => route.fulfill({ status, contentType, body: 'Rejected media fixture' }))
+    const pendingPage = await session.getPage()
+    const controller = new AbortController()
+    let rejectionTimer
+    const responseSeen = response => { if (response.url() === mediaUrl) rejectionTimer = setTimeout(() => controller.abort(), 500) }
+    pendingPage.on('response', responseSeen)
+    const fallbackTimeout = setTimeout(() => controller.abort(), 6000)
+    try {
+      await assert.rejects(resolveWco(earlyRequest, controller.signal, session, new Map(), () => {}))
+      assert.equal(controller.signal.aborted, true, 'Rejected headers must not be handed off as playable media')
+    } finally {
+      clearTimeout(rejectionTimer); clearTimeout(fallbackTimeout)
+      pendingPage.removeListener('response', responseSeen)
+      await context.unroute(mediaUrl)
+    }
+  }
+  console.log('✓ HTML and unsuccessful video responses cannot trigger early handoff')
 } finally {
   await session?.close()
   await vite.close()

@@ -43,9 +43,13 @@ export class WcoPreparation<T> {
     return job
   }
 
-  prefetch(key: string, work: Work<T>): Promise<T> {
+  prefetch(key: string, work: Work<T>, intent = false): Promise<T> {
     const job = this.active
-    if (job && (job.key !== key || job.controller.signal.aborted)) throw new PreparationBusy()
+    if (job && (job.key !== key || job.controller.signal.aborted)) {
+      if (!intent || !job.background) throw new PreparationBusy()
+      job.controller.abort()
+      return job.promise.catch(() => {}).then(() => this.prefetch(key, work, intent))
+    }
     return (job || this.start(key, work, true)).promise
   }
 

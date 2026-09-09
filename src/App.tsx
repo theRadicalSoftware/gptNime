@@ -2150,7 +2150,7 @@ function App() {
 
   useEffect(() => {
     if (!selectedEntry || animeChannelOpen || (view !== 'library' && !focusModalOpen)) return
-    return scheduleEpisodePreparation(selectedEntry, firstEpisode(selectedEntry))
+    return scheduleEpisodePreparation(selectedEntry, firstEpisode(selectedEntry), 0)
   }, [selectedEntry, view, focusModalOpen, animeChannelOpen])
 
   useEffect(() => {

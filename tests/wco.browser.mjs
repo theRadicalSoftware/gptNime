@@ -30,10 +30,32 @@ try {
   recent.put(prepared, 25, false)
   assert.equal(recent.get(episode, 25, 'dub', false, true), undefined)
   assert.equal(recent.get(episode, 25, 'dub', false), undefined)
-  for (let i = 1; i <= 9; i++) recent.put(prepared, i, false)
+  for (let i = 1; i <= 9; i++) recent.put({ ...prepared }, i, false)
   assert.equal(recent.get(episode, 1, 'dub', false), undefined)
-  assert.equal(recent.get(episode, 9, 'dub', false), prepared)
+  assert.equal(recent.get(episode, 9, 'dub', false)?.source, prepared.source)
   console.log('✓ Recent sources expire, stay bounded, distinguish version/episode/movie and are invalidated by explicit refresh')
+  const retained = new RecentSources(() => clock)
+  const active = { ...prepared }
+  retained.put(active, 25, false)
+  const initialId = active.playbackId
+  assert.match(initialId, /^[a-f0-9-]{36}$/)
+  assert.equal(new RecentSources().retain(initialId), false, 'Playback leases stay in their own browser cache')
+  clock += 60_000
+  assert.equal(retained.retain(initialId), true)
+  clock += 60_000
+  assert.equal(retained.get(episode, 25, 'dub', false), active, 'An active source survives its original 90-second expiry')
+  clock += 30_000
+  assert.equal(retained.retain(initialId), false, 'A stopped heartbeat cannot revive an expired source')
+  retained.put(active, 25, false)
+  assert.notEqual(active.playbackId, initialId)
+  const replacedId = active.playbackId
+  retained.get(episode, 25, 'dub', false, true)
+  assert.equal(retained.retain(replacedId), false, 'Explicit refresh invalidates the old lease')
+  retained.put(active, 25, false)
+  for (let minute = 1; minute < 240; minute++) { clock += 60_000; assert.equal(retained.retain(active.playbackId), true) }
+  clock += 60_000
+  assert.equal(retained.retain(active.playbackId), false, 'Even continuous playback cannot retain a signed source beyond four hours')
+  console.log('✓ Playing sources retain a short browser-specific lease; expiry, refresh and the four-hour ceiling invalidate it')
   assert.equal(episodePage(series), series)
   assert.equal(episodePage(episode), episode)
   for (const invalid of ['http://www.wco.tv/anime/test', 'https://www.wco.tv.evil.test/episode', 'https://user@www.wco.tv/episode', 'https://127.0.0.1/episode', 'https://www.wco.tv/inc/embed/index.php', 'https://www.wco.tv/episode?token=secret', 'https://www.wco.tv/wp-admin/admin.php']) {
@@ -103,9 +125,16 @@ try {
   assert.equal((await prefetch({ ...request, url: 'http://127.0.0.1/private' })).status, 400)
   assert.equal((await prefetch({ ...request, choose: true })).status, 400)
   assert.equal((await prefetch({ ...request, refresh: true })).status, 400)
+  assert.equal((await prefetch({ ...request, intent: 'yes' })).status, 400)
   assert.equal((await fetch(`${base}/api/wco/prefetch`)).status, 405)
   assert.equal((await post({ ...request, padding: 'x'.repeat(5000) })).status, 400)
   assert.equal((await fetch(`${base}/api/wco/resolve`)).status, 405)
+  const retain = (body, origin = base) => fetch(`${base}/api/wco/retain`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify(body) })
+  assert.equal((await fetch(`${base}/api/wco/retain`)).status, 405)
+  assert.equal((await retain({ playbackId: initialId }, 'https://unrelated.example')).status, 403)
+  assert.equal((await retain({ playbackId: prepared.source })).status, 400)
+  assert.equal((await retain({ playbackId: initialId, padding: 'x'.repeat(5000) })).status, 400)
+  assert.deepEqual(await (await retain({ playbackId: initialId })).json(), { retained: false })
   const braveStatus = await (await fetch(`${base}/api/wco/status`, { headers: { 'X-WCO-Browser': 'brave' } })).json()
   assert.equal(braveStatus.browser, 'brave')
   assert.equal((await fetch(`${base}/api/wco/status`, { headers: { 'X-WCO-Browser': 'untrusted' } })).status, 400)

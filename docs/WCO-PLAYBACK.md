@@ -19,6 +19,26 @@ New local evidence is under ignored `output/research/delivery-2026-09-07/`: `01-
 
 A final clean-browser run selected episode 25 from the series link using the finished connector. `03-final-live-cinema.png` and `final-live-proof.json` record real playback, seeking to six minutes, preserved transfer time, fresh cache-disabled MP4 delivery in both Document PiP and the regular popup, continued dock playback, and unchanged fixture ledger progress. The final `network.json` contains sanitized observations from this run. Automated checks include `npm run test:wco` and `CINEMA_HEADED=1 npm run test:cinema`, in addition to build and lint.
 
+## Refresh and first-start optimization — September 8, evening
+
+An isolated ordinary Brave run compared commit `950cc50` with the startup changes, using native playback of Sentenced to Be a Hero episode 1 Subbed and Delicious in Dungeon episode 1 Subbed. The test did not intercept provider/media requests, modify the real ledger, or expose browser windows on the desktop. Both runs waited 95 seconds during playback, disabled the browser cache for a hard reload, reopened the cinema and clicked Play. Each used fresh dedicated profiles and a separate local server.
+
+| Scenario | Before | After |
+| --- | ---: | ---: |
+| Play after hard refresh during an episode | 15.95 s | 1.72 s |
+| Immediate first click with a fresh profile | 42.34 s | 23.17 s |
+| Immediate click on a different unprepared title | 15.41 s | 16.73 s |
+
+The refresh improvement is supported by a cache-hit response in 451 ms, six successful active-playback lease renewals across the run, restored playback around 96 seconds, advancing video and decoded audio. The optimized capture also checks another 0.2 seconds of time advancement after the initial playback condition. Both fixture ledgers retained progress `[0, 0]` and no page errors were observed.
+
+The fresh-profile samples vary with the network and provider; they do **not** establish a repeatable percentage improvement for cold starts. The different-title sample still takes roughly 16 seconds. A separate instrumented cold preparation traced about 11 seconds between WCO's initial embed and actual player loading, inside a 19.93-second source lookup. The app does not remove that provider stage.
+
+The app now starts selected-title preparation immediately, starts Watch hover/focus preparation after 250 ms instead of 700 ms, lets explicit browsing interest replace an unrelated background prediction, and prepares the last unfinished selection on a visible page load. While video plays, a browser-specific opaque lease keeps its source available in server memory for a refresh; it expires 90 seconds after the last renewal and never exceeds four hours from creation. A stale cache hit automatically refreshes once if native delivery fails. Signed sources and lease IDs never enter app storage. Normal successful video response headers can trigger handoff before provider-side metadata parsing finishes; unsuccessful/HTML responses cannot.
+
+A follow-up live library-details run prepared the previously unplayed Delicious in Dungeon episode in 14.10 seconds while its details were open; clicking **Open in cinema** then started decoded playback in 1.77 seconds, with a cache hit. This moves provider preparation into browsing time rather than eliminating it. A fresh-profile Hero run with only five seconds of browsing still needed another 30.47 seconds after Play, further demonstrating provider variability and why a short head start is not an instant-play guarantee. Its evidence is `headstart-viewer.json` and `headstart-prepared-title.png`.
+
+Evidence and screenshots: ignored `output/research/cold-start-2026-09-08/`, especially `baseline-source.json`, `baseline-viewer.json`, `optimized-viewer.json`, and `optimized-hard-refresh.png`. Test artifacts contain only sanitized measurements and stable selection data, not signed media values.
+
 ## Automatic discovery — September 8, 2026
 
 Watch and episode selections now send title aliases, the episode number and language to the local connector without requiring a WCO link. It searches WCO’s public episode results first, compares the complete show/season prefix and exact episode number, and follows the provider-issued page. Series search and All Seasons episode lists provide a fallback; movie searches exclude numbered TV episodes. Duplicate editions and uncertain title matches appear as choices inside the cinema. Next/Previous resolves a fresh source from a remembered stable page or repeats discovery.

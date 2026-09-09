@@ -1,4 +1,4 @@
-import { localPlaybackBrowser, readWatchState, type Language, type WatchTitle } from './watchState'
+import { localPlaybackBrowser, readWatchState, recentWatch, type Language, type WatchTitle } from './watchState'
 import { useEffect, useRef } from 'react'
 
 export function episodePreparation(entry: WatchTitle, episode: number, language: Language) {
@@ -10,7 +10,7 @@ export function episodePreparation(entry: WatchTitle, episode: number, language:
 
 // The server owns this one bounded background job even if a hover ends or the
 // chooser unmounts. A subsequent Play request can adopt it without restarting.
-export async function prefetchEpisode(entry: WatchTitle, episode: number, language: Language, signal: AbortSignal): Promise<number> {
+export async function prefetchEpisode(entry: WatchTitle, episode: number, language: Language, signal: AbortSignal, intent = false): Promise<number> {
   if (readWatchState().sourceTab !== 'wco' || signal.aborted) return 0
   const browser = await localPlaybackBrowser()
   const headers = { 'X-WCO-Browser': browser }
@@ -18,24 +18,58 @@ export async function prefetchEpisode(entry: WatchTitle, episode: number, langua
   if (!status.available || !status.hiddenPreparation || signal.aborted) return 0
   const response = await fetch('/api/wco/prefetch', {
     method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, signal,
-    body: JSON.stringify(episodePreparation(entry, episode, language)),
+    body: JSON.stringify({ ...episodePreparation(entry, episode, language), ...(intent ? { intent: true } : {}) }),
   })
   if (!response.ok) return 0
   const result = await response.json()
   return result.ready && Number.isFinite(result.expiresAt) && result.expiresAt > Date.now() ? result.expiresAt : 0
 }
 
-export function scheduleEpisodePreparation(entry: WatchTitle, episode: number, delay = 700) {
+export function scheduleEpisodePreparation(entry: WatchTitle, episode: number, delay = 250) {
   const controller = new AbortController()
   const timer = window.setTimeout(() => {
-    void prefetchEpisode(entry, episode, readWatchState().language, controller.signal).catch(() => {})
+    void prefetchEpisode(entry, episode, readWatchState().language, controller.signal, true).catch(() => {})
   }, delay)
   return () => { window.clearTimeout(timer); controller.abort() }
+}
+
+// Only a playing video extends its short server-memory lease. The opaque ID is
+// never persisted and cannot start a browser or recover an expired source.
+export function retainPlayback(playbackId: string, browser: 'chrome' | 'brave') {
+  let stopped = false
+  let timer = 0
+  let controller: AbortController | undefined
+  const retain = async () => {
+    controller = new AbortController()
+    const timeout = window.setTimeout(() => controller?.abort(), 5000)
+    try {
+      const response = await fetch('/api/wco/retain', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-WCO-Browser': browser },
+        signal: controller.signal, body: JSON.stringify({ playbackId }),
+      })
+      if (response.ok && (await response.json()).retained === false) stopped = true
+    } catch { /* Playback continues; a later Play can prepare a new source. */ }
+    finally { window.clearTimeout(timeout) }
+    if (!stopped) timer = window.setTimeout(() => void retain(), 30_000)
+  }
+  void retain()
+  return () => { stopped = true; window.clearTimeout(timer); controller?.abort() }
 }
 
 export function useWatchPreparation(entries: WatchTitle[]) {
   const entriesRef = useRef(entries)
   entriesRef.current = entries
+  useEffect(() => {
+    // A hard refresh preserves only the last stable selection, never a signed
+    // URL. Give it a head start while the dashboard renders, without autoplay.
+    const last = recentWatch(entriesRef.current)
+    if (!last || document.visibilityState === 'hidden') return
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      void prefetchEpisode(last.entry, last.episode, last.language, controller.signal).catch(() => {})
+    }, 0)
+    return () => { window.clearTimeout(timer); controller.abort() }
+  }, [])
   useEffect(() => {
     let target: HTMLElement | null = null
     let cancel: (() => void) | undefined
