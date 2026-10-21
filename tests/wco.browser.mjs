@@ -8,7 +8,7 @@ const server = await createServer({ server: { host: '127.0.0.1', port: 5198, str
 await server.listen()
 let browser
 try {
-  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage, providerCapacityMessage, providerBrowser, RecentSources, movieSearchQueries, relevantMovieCandidates } = await server.ssrLoadModule('/server/wco.ts')
+  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage, providerCapacityMessage, capacityRetryDelay, providerBrowser, RecentSources, movieSearchQueries, relevantMovieCandidates } = await server.ssrLoadModule('/server/wco.ts')
   assert.equal(providerBrowser(undefined), 'chrome')
   assert.equal(providerBrowser('brave'), 'brave')
   assert.equal(providerBrowser('/usr/bin/untrusted'), null)
@@ -17,6 +17,11 @@ try {
   assert.match(providerCapacityMessage('⚠ All Servers Are At Full Capacity All of our servers are currently running at full capacity. Please become a PREMIUM user or try again later.'), /full capacity right now.*episode.*Try again in a few minutes/)
   assert.match(providerCapacityMessage('All Servers Are At Full Capacity', true), /this movie/)
   assert.equal(providerCapacityMessage('Get PREMIUM Now! Close announcement. Play Video'), null)
+  // Relaxed, growing, jittered pauses: never a tight loop, never beyond the cap.
+  assert.equal(capacityRetryDelay(0, () => 0), 8000); assert.equal(capacityRetryDelay(0, () => 1), 12000)
+  assert.ok(capacityRetryDelay(1, () => .5) > capacityRetryDelay(0, () => .5))
+  for (let attempt = 0; attempt < 40; attempt++) { const pause = capacityRetryDelay(attempt); assert.ok(pause >= 8000 && pause <= 48000) }
+  assert.equal(capacityRetryDelay(20, () => .5), 40000)
   const series = 'https://www.wco.tv/anime/cowboy-bebop/?season=all'
   const episode = 'https://www.wco.tv/cowboy-bebop-episode-25-english-dubbed-2'
   let clock = 0
@@ -251,9 +256,14 @@ try {
   await page.getByRole('status').filter({ hasText: 'WCO needs verification' }).waitFor()
   await page.getByRole('button', { name: 'Show WCO window', exact: true }).click()
   assert.equal(focused, 1)
+  providerStatus = { ...providerStatus, phase: 'capacity' }
+  await page.getByRole('status').filter({ hasText: 'retrying automatically at a relaxed pace' }).waitFor()
+  assert.equal(await page.locator('.cinema-time').innerText(), 'WAITING FOR WCO CAPACITY')
+  assert.equal(await page.getByRole('button', { name: 'Waiting for WCO capacity…' }).count(), 1)
+  assert.equal(await page.locator('.cinema-auto-actions').getByRole('button', { name: 'Cancel' }).count(), 1)
   providerStatus = { ...providerStatus, phase: 'preparing' }
   await page.getByRole('status').filter({ hasText: 'Preparing your video' }).waitFor()
-  console.log('✓ Verification has a distinct live status and can bring the same WCO window forward')
+  console.log('✓ Verification and WCO capacity retries have distinct live statuses; the WCO window can be brought forward')
   await pending.fulfill({ json: { kind: 'source', source, pageUrl: episode, seriesPage: series, language: 'dub', notice: 'WCO has this episode dubbed; using that version.', title: 'Cowboy Bebop: Episode 25 English Dubbed', previousPage: 'https://www.wco.tv/cowboy-bebop-episode-24-english-dubbed-2', nextPage: 'https://www.wco.tv/cowboy-bebop-episode-26-english-dubbed-2' } })
   await page.waitForFunction(() => { const video = document.querySelector('video'); return video && !video.paused && video.currentTime > 0.2 })
   assert.equal(await page.getByRole('button', { name: 'Dubbed', exact: true }).getAttribute('aria-pressed'), 'true')

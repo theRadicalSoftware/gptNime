@@ -19,7 +19,7 @@ const profile = await mkdtemp(join(tmpdir(), 'gptnime-session-test-'))
 let session
 try {
   const { WcoBrowser, backgroundRunner } = await vite.ssrLoadModule('/server/wcoBrowser.ts')
-  const { PreparationBudget, waitForProvider, resolveWco, cachedWco } = await vite.ssrLoadModule('/server/wco.ts')
+  const { PreparationBudget, waitForProvider, resolveWco, cachedWco, capacityRetry } = await vite.ssrLoadModule('/server/wco.ts')
   const executable = process.env.CHROME_PATH || '/usr/bin/google-chrome'
   session = new WcoBrowser(executable, profile)
   const page = await session.getPage()
@@ -249,21 +249,54 @@ try {
 
   await context.unrouteAll({ behavior: 'wait' })
   const capacityPage = 'https://www.wco.tv/capacity-fixture-episode-1-english-subbed'
-  await context.route('https://www.wco.tv/**', route => route.fulfill({ contentType: 'text/html', body: '<title>Capacity Fixture Episode 1 English Subbed</title><iframe src="https://embed.wcostream.com/inc/embed/video-js.php"></iframe>' }))
-  // The provider's observed 503 player page for rationed free sessions.
-  await context.route('https://embed.wcostream.com/**', route => route.fulfill({ status: 503, contentType: 'text/html', body: '<h2>All Servers Are At Full Capacity</h2><p>All of our servers are currently running at full capacity.</p><p>Please become a PREMIUM user or try again later.</p><a href="https://www.wco.tv/premium">Get PREMIUM Now!</a><button>Try Again</button>' }))
-  const capacityController = new AbortController()
-  const capacityTimeout = setTimeout(() => capacityController.abort(), 10_000)
-  const capacityStarted = Date.now()
-  const capacityCheckpoints = new Map()
+  const embedUrl = 'https://embed.wcostream.com/inc/embed/index.php?fixture=capacity'
+  let episodePageLoads = 0
+  await context.route('https://www.wco.tv/**', route => { episodePageLoads++; return route.fulfill({ contentType: 'text/html', body: `<title>Capacity Fixture Episode 1 English Subbed</title><iframe src="${embedUrl}"></iframe>` }) })
+  // WCO's observed rationing page: HTTP 503 and its own retry-btn script, which
+  // returns the frame to its starting embed. Later loads play.
+  let fullLoads = 0, capacityLimit = 2
+  const playerLoads = []
+  await context.route('https://embed.wcostream.com/**', route => {
+    playerLoads.push(Date.now())
+    if (fullLoads < capacityLimit) {
+      fullLoads++
+      return route.fulfill({ status: 503, contentType: 'text/html', body: `<h2>All Servers Are At Full Capacity</h2><p>All of our servers are currently running at full capacity.</p><p>Please become a PREMIUM user or try again later.</p><a href="https://www.wco.tv/premium">Get PREMIUM Now!</a><button type="button" class="btn-retry" id="retry-btn">Try Again</button><script>try { sessionStorage.setItem('lastEmbedUrl', ${JSON.stringify(embedUrl)}) } catch {} document.getElementById('retry-btn').addEventListener('click', function () { var back = null; try { back = sessionStorage.getItem('lastEmbedUrl') } catch (e) {} if (back) location.replace(back); else location.reload() })</script>` })
+    }
+    return route.fulfill({ contentType: 'text/html', body: `<video src="${mediaUrl}" preload="metadata"></video>` })
+  })
+  await context.route(mediaUrl, route => route.fulfill({ contentType: 'video/webm', body: media }))
+  const pacing = { ...capacityRetry }
+  Object.assign(capacityRetry, { firstMs: 400, maxMs: 800, jitter: 0 })
+  const capacityRequest = { url: capacityPage, titles: ['Capacity Fixture'], episode: 1, language: 'sub', movie: false, choose: false, refresh: true }
   try {
-    await assert.rejects(resolveWco({ url: capacityPage, titles: ['Capacity Fixture'], episode: 1, language: 'sub', movie: false, choose: false }, capacityController.signal, session, capacityCheckpoints, () => {}),
-      (error) => error.code === 'access' && /free servers are at full capacity/.test(error.message))
-    assert.equal(capacityController.signal.aborted, false, 'The capacity page is reported promptly, not after the media deadline')
-  } finally { clearTimeout(capacityTimeout) }
-  assert.ok(Date.now() - capacityStarted < 10_000)
-  assert.equal([...capacityCheckpoints.values()][0]?.reload, true, 'Retry reloads the provider page for a fresh attempt')
-  console.log('✓ WCO full-capacity pages are reported within seconds as an access state with a fresh-page retry')
+    const phases = []
+    const result = await resolveWco(capacityRequest, new AbortController().signal, session, new Map(), (phase) => phases.push(phase))
+    assert.equal(result.kind, 'source')
+    assert.equal(result.source, mediaUrl)
+    assert.equal(fullLoads, 2)
+    assert.equal(playerLoads.length, 3, 'Each pause is followed by exactly one new player attempt')
+    assert.equal(episodePageLoads, 2, 'Try Again first, then one ordinary episode-page reload for a fresh player link')
+    assert.ok(playerLoads[1] - playerLoads[0] >= 400 && playerLoads[2] - playerLoads[1] >= 560, 'Retries wait, and later waits grow')
+    assert.ok(phases.includes('capacity'))
+    console.log('✓ WCO full-capacity pages retry at a growing pace, alternating the provider’s Try Again with a fresh page load, until the episode plays')
+
+    fullLoads = 0; capacityLimit = Infinity; playerLoads.length = 0; episodePageLoads = 0
+    const cancel = new AbortController()
+    const cancelled = resolveWco({ ...capacityRequest, refresh: true }, cancel.signal, session, new Map(), (phase) => { if (phase === 'capacity') setTimeout(() => cancel.abort(), 100) })
+    const cancelStarted = Date.now()
+    await assert.rejects(cancelled)
+    assert.ok(Date.now() - cancelStarted < 3000, 'Cancel ends a capacity wait promptly')
+    const pressesAtCancel = playerLoads.length
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    assert.equal(playerLoads.length, pressesAtCancel, 'Nothing keeps retrying after cancellation')
+
+    Object.assign(capacityRetry, { allowanceMs: 1500 })
+    const started = Date.now()
+    await assert.rejects(resolveWco({ ...capacityRequest, refresh: true }, new AbortController().signal, session, new Map(), () => {}),
+      (error) => error.code === 'access' && /free servers are at full capacity.*retried automatically/.test(error.message))
+    assert.ok(Date.now() - started < 10_000)
+    console.log('✓ Capacity retry stops on cancel and ends with a clear access message after its allowance')
+  } finally { Object.assign(capacityRetry, pacing) }
 } finally {
   await session?.close()
   await vite.close()

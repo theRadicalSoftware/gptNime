@@ -14,7 +14,15 @@ export function providerBrowser(value: unknown): 'chrome' | 'brave' | null {
 const loopback = new Set(['127.0.0.1', 'localhost', '[::1]'])
 const deadlineMs = 120_000
 const verificationMs = 600_000
-export type ProviderPhase = 'opening' | 'searching' | 'verification' | 'preparing'
+export type ProviderPhase = 'opening' | 'searching' | 'verification' | 'capacity' | 'preparing'
+// Retrying WCO's full-capacity page like a patient person: its own Try Again
+// control, one job, a relaxed growing pause with jitter, and a firm allowance.
+// Mutable only so intercepted fixtures can shorten the pauses.
+export const capacityRetry = { firstMs: 10_000, maxMs: 40_000, growth: 1.4, jitter: 0.2, allowanceMs: 15 * 60_000 }
+export function capacityRetryDelay(attempt: number, random = Math.random) {
+  const base = Math.min(capacityRetry.maxMs, capacityRetry.firstMs * capacityRetry.growth ** attempt)
+  return Math.round(base * (1 - capacityRetry.jitter + random() * capacityRetry.jitter * 2))
+}
 type ReportPhase = (phase: ProviderPhase) => void
 type ResumePoint = { pageUrl: string; language: 'sub' | 'dub'; notice: string; seriesPage?: string; reload?: boolean }
 class PlaybackError extends Error {
@@ -217,14 +225,40 @@ export async function searchLinks(page: Page): Promise<Link[]> {
 export class PreparationBudget {
   end: number
   verificationRemaining: number
-  constructor(workMs = deadlineMs, humanMs = verificationMs) {
+  capacityRemaining: number
+  capacityAttempts = 0
+  constructor(workMs = deadlineMs, humanMs = verificationMs, capacityMs = capacityRetry.allowanceMs) {
     this.end = Date.now() + workMs
     this.verificationRemaining = humanMs
+    this.capacityRemaining = capacityMs
   }
   accountVerification(elapsed: number) {
     this.end += elapsed
     this.verificationRemaining = Math.max(0, this.verificationRemaining - elapsed)
   }
+  accountCapacity(elapsed: number) {
+    // Waiting for WCO capacity does not consume the normal media deadline.
+    this.end += elapsed
+    this.capacityRemaining = Math.max(0, this.capacityRemaining - elapsed)
+  }
+}
+
+// Pause before pressing WCO's Try Again, ending early if the person cancels.
+async function waitForCapacity(page: Page, budget: PreparationBudget, signal: AbortSignal, report: ReportPhase, message: string) {
+  const pause = capacityRetryDelay(budget.capacityAttempts++)
+  if (pause > budget.capacityRemaining) throw new PlaybackError(`${message} GPTNime retried automatically for ${Math.round(capacityRetry.allowanceMs / 60_000)} minutes.`, 'access')
+  report('capacity')
+  const started = Date.now()
+  try {
+    while (Date.now() - started < pause) {
+      signal.throwIfAborted()
+      if (page.isClosed()) throw new PlaybackError('The WCO preparation window was closed. Retry playback to continue.')
+      await page.waitForTimeout(Math.min(500, pause - (Date.now() - started)))
+    }
+  } finally {
+    budget.accountCapacity(Date.now() - started)
+  }
+  report('preparing')
 }
 
 export async function waitForProvider(page: Page, budget: PreparationBudget, signal: AbortSignal, report: ReportPhase, resume: ProviderPhase) {
@@ -471,10 +505,26 @@ async function prepareWco(request: ResolveRequest, signal: AbortSignal, session:
           await close.click({ timeout: 1000 }).catch(() => {})
           continue
         }
-        // Read-only: the provider's Try Again stays the person's choice via Retry.
-        if (await frame.getByRole('button', { name: 'Try Again', exact: true }).isVisible().catch(() => false)) {
+        const tryAgain = frame.getByRole('button', { name: 'Try Again', exact: true })
+        if (await tryAgain.isVisible().catch(() => false)) {
           const capacity = providerCapacityMessage(await frame.locator('body').innerText().catch(() => ''), request.movie)
-          if (capacity) throw new PlaybackError(capacity, 'access')
+          if (capacity) {
+            // Speculative work stops here (see WcoPreparation); a waiting viewer
+            // retries through WCO's own button at a relaxed, jittered pace.
+            await waitForCapacity(page, budget, signal, report, capacity)
+            // WCO's Try Again returns to the same time-stamped player link from the
+            // first page load. Alternate it with an ordinary reload of the episode
+            // page, which issues a fresh link, as a person would after a failed retry.
+            if (budget.capacityAttempts % 2 === 0) {
+              await page.goto(selectedPage, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+            } else if (await tryAgain.isVisible().catch(() => false)) {
+              // Let the player frame leave the capacity page before reading it again.
+              const navigated = page.waitForEvent('framenavigated', { predicate: (item) => item === frame, timeout: 5000 }).catch(() => {})
+              await tryAgain.click({ timeout: 1000 }).catch(() => {})
+              await navigated
+            }
+            break
+          }
         }
         const video = frame.locator('video').first()
         if (!await video.count()) continue

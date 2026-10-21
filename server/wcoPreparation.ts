@@ -19,7 +19,8 @@ export class WcoPreparation<T> {
 
   private deadline(job: Job<T>) {
     clearTimeout(job.timer)
-    job.timer = setTimeout(() => job.controller.abort(), job.background ? 60_000 : 735_000)
+    // Foreground: 2 min of work + 10 min verification + 15 min capacity waiting + margin.
+    job.timer = setTimeout(() => job.controller.abort(), job.background ? 60_000 : 1_635_000)
     job.timer.unref()
   }
 
@@ -31,9 +32,9 @@ export class WcoPreparation<T> {
     this.deadline(job)
     job.promise = Promise.resolve().then(() => work(controller.signal, (phase) => {
       job.phase = phase
-      // Speculation never waits on a human check or shows a provider window.
-      // A foreground click retains the normal manual-verification workflow.
-      if (job.background && phase === 'verification') controller.abort()
+      // Speculation never waits on a human check or WCO capacity, and never shows
+      // a provider window. A foreground click keeps verification and paced retry.
+      if (job.background && (phase === 'verification' || phase === 'capacity')) controller.abort()
     })).finally(() => {
       clearTimeout(job.timer)
       if (this.active === job) this.active = null
