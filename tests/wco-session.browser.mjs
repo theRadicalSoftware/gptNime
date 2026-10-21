@@ -246,6 +246,24 @@ try {
     }
   }
   console.log('✓ HTML and unsuccessful video responses cannot trigger early handoff')
+
+  await context.unrouteAll({ behavior: 'wait' })
+  const capacityPage = 'https://www.wco.tv/capacity-fixture-episode-1-english-subbed'
+  await context.route('https://www.wco.tv/**', route => route.fulfill({ contentType: 'text/html', body: '<title>Capacity Fixture Episode 1 English Subbed</title><iframe src="https://embed.wcostream.com/inc/embed/video-js.php"></iframe>' }))
+  // The provider's observed 503 player page for rationed free sessions.
+  await context.route('https://embed.wcostream.com/**', route => route.fulfill({ status: 503, contentType: 'text/html', body: '<h2>All Servers Are At Full Capacity</h2><p>All of our servers are currently running at full capacity.</p><p>Please become a PREMIUM user or try again later.</p><a href="https://www.wco.tv/premium">Get PREMIUM Now!</a><button>Try Again</button>' }))
+  const capacityController = new AbortController()
+  const capacityTimeout = setTimeout(() => capacityController.abort(), 10_000)
+  const capacityStarted = Date.now()
+  const capacityCheckpoints = new Map()
+  try {
+    await assert.rejects(resolveWco({ url: capacityPage, titles: ['Capacity Fixture'], episode: 1, language: 'sub', movie: false, choose: false }, capacityController.signal, session, capacityCheckpoints, () => {}),
+      (error) => error.code === 'access' && /free servers are at full capacity/.test(error.message))
+    assert.equal(capacityController.signal.aborted, false, 'The capacity page is reported promptly, not after the media deadline')
+  } finally { clearTimeout(capacityTimeout) }
+  assert.ok(Date.now() - capacityStarted < 10_000)
+  assert.equal([...capacityCheckpoints.values()][0]?.reload, true, 'Retry reloads the provider page for a fresh attempt')
+  console.log('✓ WCO full-capacity pages are reported within seconds as an access state with a fresh-page retry')
 } finally {
   await session?.close()
   await vite.close()

@@ -26,6 +26,15 @@ export function providerAccessMessage(body: string, movie = false): string | nul
   return null
 }
 
+// WCO's player answers free sessions with this page (HTTP 503) when it is
+// rationing playback. Report it instead of waiting out the media deadline.
+export function providerCapacityMessage(body: string, movie = false): string | null {
+  if (/all servers are (?:currently )?at full capacity|servers are currently running at full capacity/i.test(body)) {
+    return `WCO’s free servers are at full capacity right now, so WCO is not sending this ${movie ? 'movie' : 'episode'}. Try again in a few minutes. If you have WCO Premium, sign in in the WCO window, then retry.`
+  }
+  return null
+}
+
 export function episodePage(value: unknown): string | null {
   if (typeof value !== 'string' || value.length > 2048) return null
   try {
@@ -461,6 +470,11 @@ async function prepareWco(request: ResolveRequest, signal: AbortSignal, session:
         if (await close.isVisible().catch(() => false) && await close.isEnabled().catch(() => false)) {
           await close.click({ timeout: 1000 }).catch(() => {})
           continue
+        }
+        // Read-only: the provider's Try Again stays the person's choice via Retry.
+        if (await frame.getByRole('button', { name: 'Try Again', exact: true }).isVisible().catch(() => false)) {
+          const capacity = providerCapacityMessage(await frame.locator('body').innerText().catch(() => ''), request.movie)
+          if (capacity) throw new PlaybackError(capacity, 'access')
         }
         const video = frame.locator('video').first()
         if (!await video.count()) continue

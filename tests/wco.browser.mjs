@@ -8,12 +8,15 @@ const server = await createServer({ server: { host: '127.0.0.1', port: 5198, str
 await server.listen()
 let browser
 try {
-  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage, providerBrowser, RecentSources, movieSearchQueries, relevantMovieCandidates } = await server.ssrLoadModule('/server/wco.ts')
+  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage, providerCapacityMessage, providerBrowser, RecentSources, movieSearchQueries, relevantMovieCandidates } = await server.ssrLoadModule('/server/wco.ts')
   assert.equal(providerBrowser(undefined), 'chrome')
   assert.equal(providerBrowser('brave'), 'brave')
   assert.equal(providerBrowser('/usr/bin/untrusted'), null)
   assert.match(providerAccessMessage('This Video Is for Premium Users'), /premium accounts/)
   assert.equal(providerAccessMessage('Get PREMIUM Now! Close announcement. Play Video'), null)
+  assert.match(providerCapacityMessage('⚠ All Servers Are At Full Capacity All of our servers are currently running at full capacity. Please become a PREMIUM user or try again later.'), /full capacity right now.*episode.*Try again in a few minutes/)
+  assert.match(providerCapacityMessage('All Servers Are At Full Capacity', true), /this movie/)
+  assert.equal(providerCapacityMessage('Get PREMIUM Now! Close announcement. Play Video'), null)
   const series = 'https://www.wco.tv/anime/cowboy-bebop/?season=all'
   const episode = 'https://www.wco.tv/cowboy-bebop-episode-25-english-dubbed-2'
   let clock = 0
