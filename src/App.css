@@ -948,6 +948,26 @@
   background: rgba(225, 70, 67, 0.16);
 }
 
+.storage-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.storage-notice p {
+  flex: 1 1 320px;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.storage-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .notice-live,
 .notice-empty {
   border: 1px solid rgba(229, 193, 124, 0.24);

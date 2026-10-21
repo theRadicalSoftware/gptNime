@@ -70,6 +70,23 @@ try {
   clock += 30_000
   assert.equal(pair.get(dub.pageUrl, 25, 'dub', false), undefined)
   console.log('✓ Either playing version keeps its alternate ready; an expired primary cannot keep another source alive')
+  const playing = new RecentSources(() => clock)
+  const watching = { ...prepared }, alternate = { ...sub }
+  playing.put(watching, 25, false); playing.put(alternate, 25, false)
+  assert.deepEqual(playing.retainPair(watching.playbackId, alternate.playbackId), { retained: true, alternateRetained: true })
+  // Hover, chooser and next-episode predictions keep arriving during a long session.
+  for (let i = 1; i <= 12; i++) playing.put({ ...prepared }, i, false)
+  assert.equal(playing.get(episode, 25, 'dub', false), watching, 'The playing version survives later speculative preparation')
+  assert.equal(playing.get(sub.pageUrl, 25, 'sub', false), alternate, 'The renewed alternate version survives too')
+  for (let i = 1; i <= 6; i++) assert.equal(playing.get(episode, i, 'dub', false), undefined, `Older speculative episode ${i} made room first`)
+  for (let i = 7; i <= 12; i++) assert.ok(playing.get(episode, i, 'dub', false), `Recent speculative episode ${i} stays within the bound`)
+  clock += 30_000
+  assert.deepEqual(playing.retainPair(watching.playbackId, alternate.playbackId), { retained: true, alternateRetained: true })
+  clock += 90_000
+  assert.equal(playing.retain(watching.playbackId), false, 'A lease protects only while playback keeps renewing it')
+  playing.put({ ...prepared }, 40, false)
+  assert.equal(playing.get(episode, 25, 'dub', false), undefined)
+  console.log('✓ Actively renewed versions are evicted last; speculative sources make room and the bound stays at eight')
   assert.equal(episodePage(series), series)
   assert.equal(episodePage(episode), episode)
   for (const invalid of ['http://www.wco.tv/anime/test', 'https://www.wco.tv.evil.test/episode', 'https://user@www.wco.tv/episode', 'https://127.0.0.1/episode', 'https://www.wco.tv/inc/embed/index.php', 'https://www.wco.tv/episode?token=secret', 'https://www.wco.tv/wp-admin/admin.php']) {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
+import { createServer as createHttpServer } from 'node:http'
 import { chromium } from 'playwright'
 
 const base = process.env.CINEMA_URL || 'http://127.0.0.1:5197'
@@ -25,6 +26,23 @@ const ledger = { library: [
 ], history: [] }
 const storage = (data = ledger) => ({ cookies: [], origins: [{ origin: base, localStorage: [{ name: 'gptnime-tracker-library-v1', value: JSON.stringify(data) }] }] })
 const errors = []
+// Real loopback HTTP delivery that can hold a response open, keeping a video loading.
+let mediaGate = Promise.resolve()
+let releaseMedia = () => {}
+const holdMedia = () => { mediaGate = new Promise((resolve) => { releaseMedia = resolve }) }
+const mediaServer = createHttpServer(async (request, response) => {
+  if (!request.url?.startsWith('/slow.webm')) { response.writeHead(404, { 'Content-Type': 'text/html' }); response.end('Missing media fixture'); return }
+  const body = await readFile('tests/fixtures/cinema-test.webm')
+  const range = /^bytes=(\d+)-(\d*)$/.exec(request.headers.range || '')
+  const start = range ? Number(range[1]) : 0, end = range?.[2] ? Math.min(Number(range[2]), body.length - 1) : body.length - 1
+  // Send successful headers at once, as a CDN does, and hold only the video bytes.
+  response.writeHead(range ? 206 : 200, { 'Content-Type': 'video/webm', 'Content-Length': end - start + 1, 'Accept-Ranges': 'bytes', ...(range ? { 'Content-Range': `bytes ${start}-${end}/${body.length}` } : {}) })
+  response.flushHeaders()
+  await mediaGate
+  if (!response.destroyed) response.end(body.subarray(start, end + 1))
+})
+await new Promise((resolve) => mediaServer.listen(0, '127.0.0.1', resolve))
+const mediaBase = `http://127.0.0.1:${mediaServer.address().port}`
 
 try {
   for (let attempt = 0; attempt < 80; attempt++) {
@@ -211,6 +229,58 @@ try {
   assert.ok(!(await page.evaluate(() => localStorage.getItem('gptnime-cinema-v1'))).includes('cinema-test-fixture'))
   passed('Direct media is not rejected solely for a WCO CDN hostname; references stay session-only')
 
+  // Seed a resume point, then pop out while the same source is still loading.
+  // Playwright request interception itself stalls a video adopted mid-download,
+  // so routes are lifted here, as in the previous real-delivery check.
+  await context.unrouteAll({ behavior: 'wait' })
+  const slowMediaUrl = `${mediaBase}/slow.webm`
+  await page.getByLabel('Direct video URL', { exact: true }).fill(slowMediaUrl)
+  await page.getByRole('button', { name: 'Load video', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('video')?.readyState >= 2)
+  await page.locator('video').evaluate((video) => { video.currentTime = 6 })
+  await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 6) < .05)
+  await page.getByRole('button', { name: 'Clear source' }).click()
+  // A separate URL avoids Chromium's media cache; give it the same saved point.
+  const heldMediaUrl = `${slowMediaUrl}?held`
+  await page.evaluate(([from, to]) => {
+    const fingerprint = (value) => { let hash = 2166136261; for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619); return (hash >>> 0).toString(36) }
+    const state = JSON.parse(localStorage.getItem('gptnime-cinema-v1'))
+    const [key, bookmark] = Object.entries(state.bookmarks).find(([key]) => key.endsWith(`:${fingerprint(from)}`))
+    state.bookmarks[key.replace(/[^:]+$/, fingerprint(to))] = bookmark
+    localStorage.setItem('gptnime-cinema-v1', JSON.stringify(state))
+  }, [slowMediaUrl, heldMediaUrl])
+  holdMedia()
+  await page.getByLabel('Direct video URL', { exact: true }).fill(heldMediaUrl)
+  await page.getByRole('button', { name: 'Load video', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('video')?.readyState === 0)
+  const loadingPopupPromise = page.waitForEvent('popup')
+  await page.getByRole('button', { name: 'Pop out player' }).click()
+  const loadingPopup = await loadingPopupPromise
+  await loadingPopup.locator('video').waitFor()
+  assert.equal(await loadingPopup.locator('video').evaluate((video) => video.dataset.cinemaMoving), undefined)
+  releaseMedia()
+  await loadingPopup.waitForFunction(() => document.querySelector('video')?.readyState >= 1 && Math.abs(document.querySelector('video').currentTime - 6) < .2)
+  await loadingPopup.getByRole('button', { name: 'Pop player back in' }).click()
+  await page.waitForFunction(() => document.querySelector('video')?.readyState >= 1 && !document.querySelector('video').dataset.cinemaMoving)
+  assert.ok(Math.abs(await page.locator('video').evaluate((video) => video.currentTime) - 6) < .2)
+  await page.getByRole('button', { name: 'Clear source' }).click()
+  // A failed source has no position to transfer and must not stay marked as moving.
+  await page.getByLabel('Direct video URL', { exact: true }).fill(`${mediaBase}/missing.webm`)
+  await page.getByRole('button', { name: 'Load video', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('video')?.error)
+  const failedPopupPromise = page.waitForEvent('popup')
+  await page.getByRole('button', { name: 'Pop out player' }).click()
+  const failedPopup = await failedPopupPromise
+  await failedPopup.locator('video').waitFor()
+  assert.equal(await failedPopup.locator('video').evaluate((video) => video.dataset.cinemaMoving), undefined)
+  await failedPopup.getByRole('button', { name: 'Pop player back in' }).click()
+  await page.locator('video').waitFor()
+  assert.equal(await page.locator('video').evaluate((video) => video.dataset.cinemaMoving), undefined)
+  await page.getByRole('button', { name: 'Clear source' }).click()
+  await context.route('**/api/wco/status', (route) => route.fulfill({ json: { available: false } }))
+  await context.route('https://graphql.anilist.co/**', (route) => route.fulfill({ json: { data: { Media: { recommendations: { nodes: [] } } } } }))
+  passed('Pop-out during loading keeps the resume point; failed media never stays marked as moving')
+
   await page.getByRole('button', { name: 'Close cinema', exact: true }).click()
   await page.getByRole('button', { name: 'Library', exact: true }).first().click()
   await page.locator('.anime-card').first().waitFor()
@@ -323,4 +393,5 @@ try {
 } finally {
   await browser?.close()
   server?.kill()
+  mediaServer.close()
 }

@@ -59,7 +59,7 @@ type ResolveResult = PlaybackSource | { kind: 'choices'; message: string; choice
 // Briefly reuse an already prepared episode when returning to it or switching
 // versions. These signed sources stay in server memory and never cross browsers.
 export class RecentSources {
-  private entries = new Map<string, { result: PlaybackSource; expires: number; created: number; timer: ReturnType<typeof setTimeout> }>()
+  private entries = new Map<string, { result: PlaybackSource; expires: number; created: number; leased: boolean; timer: ReturnType<typeof setTimeout> }>()
   constructor(private now: () => number = Date.now) {}
   private forget(key: string) {
     clearTimeout(this.entries.get(key)?.timer)
@@ -84,8 +84,13 @@ export class RecentSources {
     const timer = setTimeout(() => this.entries.delete(key), 90_000)
     timer.unref()
     result.playbackId = randomUUID()
-    this.entries.set(key, { result, expires: this.now() + 90_000, created: this.now(), timer })
-    if (this.entries.size > 8) this.forget(this.entries.keys().next().value!)
+    this.entries.set(key, { result, expires: this.now() + 90_000, created: this.now(), leased: false, timer })
+    if (this.entries.size > 8) {
+      // Speculative sources make room first. A version the cinema is actively
+      // renewing must survive later hover, chooser and next-episode preparation.
+      const evict = [...this.entries].find(([, entry]) => !entry.leased)?.[0] ?? this.entries.keys().next().value!
+      this.forget(evict)
+    }
   }
   retain(playbackId: string): boolean {
     for (const [key, entry] of this.entries) {
@@ -98,6 +103,10 @@ export class RecentSources {
       entry.expires = Math.min(now + 90_000, entry.created + 4 * 60 * 60_000)
       entry.timer = setTimeout(() => this.entries.delete(key), entry.expires - now)
       entry.timer.unref()
+      // Renewal also counts as recent use, so eviction order follows playback.
+      entry.leased = true
+      this.entries.delete(key)
+      this.entries.set(key, entry)
       return true
     }
     return false

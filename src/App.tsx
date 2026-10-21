@@ -41,6 +41,8 @@ import { firstEpisode } from './watch/watchState'
 import { scheduleEpisodePreparation, useWatchPreparation } from './watch/watchPreparation'
 
 const STORAGE_KEY = 'gptnime-tracker-library-v1'
+const RECOVERY_KEY_PREFIX = `${STORAGE_KEY}-recovery-`
+const MAX_RECOVERY_COPIES = 3
 const FOCUS_LAYOUT_KEY = 'gptnime-focus-layout-v1'
 const NOTIFICATION_PREFS_KEY = 'gptnime-notification-prefs-v1'
 const ANILIST_ENDPOINT = 'https://graphql.anilist.co'
@@ -217,6 +219,17 @@ type StoredState = {
   library: AnimeEntry[]
   history: HistoryEvent[]
 }
+
+type StorageRecovery = {
+  key: string | null
+  reason: 'unreadable' | 'invalid' | 'unavailable'
+  raw: string
+  savedAt: string
+  skippedTitles: number
+  skippedEvents: number
+}
+
+type LoadedState = StoredState & { recovery: StorageRecovery | null; saveBlocked: boolean }
 
 type NotificationPreferences = {
   staleDays: number
@@ -1484,16 +1497,131 @@ function normalizeStoredState(parsed: unknown): StoredState & { invalidCount: nu
   }
 }
 
-function readStoredState(): StoredState {
+function readStorage(key: string) {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (!stored) {
-      return { library: [], history: [] }
-    }
-
-    return normalizeStoredState(JSON.parse(stored))
+    return localStorage.getItem(key)
   } catch {
-    return { library: [], history: [] }
+    return null
+  }
+}
+
+function writeStorage(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function recoveryKeys() {
+  try {
+    return Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index))
+      .filter((key): key is string => Boolean(key?.startsWith(RECOVERY_KEY_PREFIX)))
+      .sort()
+  } catch {
+    return []
+  }
+}
+
+function readRecoveryRecord(key: string): (StorageRecovery & { dismissed?: boolean }) | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || 'null')
+    if (!isRecord(parsed) || typeof parsed.raw !== 'string' || typeof parsed.savedAt !== 'string') return null
+
+    return {
+      key,
+      reason: parsed.reason === 'invalid' ? 'invalid' : 'unreadable',
+      raw: parsed.raw,
+      savedAt: parsed.savedAt,
+      skippedTitles: typeof parsed.skippedTitles === 'number' ? parsed.skippedTitles : 0,
+      skippedEvents: typeof parsed.skippedEvents === 'number' ? parsed.skippedEvents : 0,
+      dismissed: parsed.dismissed === true,
+    }
+  } catch {
+    return null
+  }
+}
+
+// Keep the exact stored text before a normalized library can replace it.
+// Reading runs twice under StrictMode, so an identical copy is reused.
+function preserveStoredLibrary(raw: string, recovery: Omit<StorageRecovery, 'key' | 'raw' | 'savedAt'>): StorageRecovery {
+  const keys = recoveryKeys()
+  const existing = keys.map(readRecoveryRecord).find((record) => record?.raw === raw)
+  if (existing) return existing
+
+  const savedAt = new Date().toISOString()
+  const key = `${RECOVERY_KEY_PREFIX}${Date.now()}`
+  const saved = writeStorage(key, JSON.stringify({ ...recovery, raw, savedAt }))
+  if (saved) {
+    // Older copies the person has already dismissed make room; undismissed ones stay.
+    const dismissed = keys.filter((item) => readRecoveryRecord(item)?.dismissed)
+    dismissed.slice(0, Math.max(0, keys.length + 1 - MAX_RECOVERY_COPIES)).forEach((item) => {
+      try { localStorage.removeItem(item) } catch { /* Keeping an extra copy is harmless. */ }
+    })
+  }
+
+  return { ...recovery, key: saved ? key : null, raw, savedAt }
+}
+
+function readStoredState(): LoadedState {
+  let stored: string | null
+  try {
+    stored = localStorage.getItem(STORAGE_KEY)
+  } catch {
+    // Unknown contents must never be replaced by an empty session library.
+    return {
+      library: [],
+      history: [],
+      recovery: { key: null, reason: 'unavailable', raw: '', savedAt: new Date().toISOString(), skippedTitles: 0, skippedEvents: 0 },
+      saveBlocked: true,
+    }
+  }
+
+  const pending = recoveryKeys().map(readRecoveryRecord).filter((record) => record && !record.dismissed).pop() || null
+  if (!stored) {
+    return { library: [], history: [], recovery: pending, saveBlocked: false }
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stored)
+  } catch {
+    parsed = null
+  }
+
+  if (!isRecord(parsed) || !Array.isArray(parsed.library)) {
+    const recovery = preserveStoredLibrary(stored, { reason: 'unreadable', skippedTitles: 0, skippedEvents: 0 })
+    return { library: [], history: [], recovery, saveBlocked: !recovery.key }
+  }
+
+  const normalized = normalizeStoredState(parsed)
+  const skippedEvents = Array.isArray(parsed.history) ? parsed.history.length - normalized.history.length : 0
+  if (!normalized.invalidCount && !skippedEvents) {
+    return { library: normalized.library, history: normalized.history, recovery: pending, saveBlocked: false }
+  }
+
+  const recovery = preserveStoredLibrary(stored, { reason: 'invalid', skippedTitles: normalized.invalidCount, skippedEvents })
+  return { library: normalized.library, history: normalized.history, recovery, saveBlocked: !recovery.key }
+}
+
+function downloadRecoveryCopy(recovery: StorageRecovery) {
+  const blob = new Blob([recovery.raw], { type: recovery.reason === 'invalid' ? 'application/json' : 'text/plain' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `gptnime-recovered-library-${recovery.savedAt.slice(0, 10)}.${recovery.reason === 'invalid' ? 'json' : 'txt'}`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function dismissRecoveryCopy(recovery: StorageRecovery) {
+  if (!recovery.key) return
+  try {
+    const stored = JSON.parse(localStorage.getItem(recovery.key) || 'null')
+    if (isRecord(stored)) localStorage.setItem(recovery.key, JSON.stringify({ ...stored, dismissed: true }))
+  } catch {
+    // The notice still closes for this session; the copy remains available.
   }
 }
 
@@ -2035,12 +2163,16 @@ function App() {
   const [detailError, setDetailError] = useState('')
   const [focusModalOpen, setFocusModalOpen] = useState(false)
   const [focusLayout, setFocusLayout] = useState<FocusLayout>(() =>
-    localStorage.getItem(FOCUS_LAYOUT_KEY) === 'compact' ? 'compact' : 'cinematic',
+    readStorage(FOCUS_LAYOUT_KEY) === 'compact' ? 'compact' : 'cinematic',
   )
   const [lastProgressChange, setLastProgressChange] = useState<ProgressUndoSnapshot | null>(null)
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
   const [importMode, setImportMode] = useState<ImportMode>('merge')
-  const [sageMode, setSageMode] = useState(() => localStorage.getItem(SAGE_MODE_KEY) === 'on')
+  const [sageMode, setSageMode] = useState(() => readStorage(SAGE_MODE_KEY) === 'on')
+  const [storageRecovery, setStorageRecovery] = useState<StorageRecovery | null>(initialState.recovery)
+  const [saveBlocked, setSaveBlocked] = useState(initialState.saveBlocked)
+  const [saveFailed, setSaveFailed] = useState(false)
+  const [saveAttempt, setSaveAttempt] = useState(0)
   const [notificationDrawerOpen, setNotificationDrawerOpen] = useState(false)
   const [animeChannelOpen, setAnimeChannelOpen] = useState(false)
   const [watchRequest, setWatchRequest] = useState<WatchRequest | null>(null)
@@ -2057,19 +2189,21 @@ function App() {
   const sageClickTimerRef = useRef<number | undefined>(undefined)
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ library, history }))
-  }, [library, history])
+    // Paused only while an unpreserved original would otherwise be overwritten.
+    if (saveBlocked) return
+    setSaveFailed(!writeStorage(STORAGE_KEY, JSON.stringify({ library, history })))
+  }, [library, history, saveBlocked, saveAttempt])
 
   useEffect(() => {
-    localStorage.setItem(NOTIFICATION_PREFS_KEY, JSON.stringify(notificationPreferences))
+    writeStorage(NOTIFICATION_PREFS_KEY, JSON.stringify(notificationPreferences))
   }, [notificationPreferences])
 
   useEffect(() => {
-    localStorage.setItem(FOCUS_LAYOUT_KEY, focusLayout)
+    writeStorage(FOCUS_LAYOUT_KEY, focusLayout)
   }, [focusLayout])
 
   useEffect(() => {
-    localStorage.setItem(SAGE_MODE_KEY, sageMode ? 'on' : 'off')
+    writeStorage(SAGE_MODE_KEY, sageMode ? 'on' : 'off')
   }, [sageMode])
 
   useEffect(() => () => window.clearTimeout(sageClickTimerRef.current), [])
@@ -3105,6 +3239,23 @@ function App() {
           </div>
         </header>
 
+        <StorageNotice
+          recovery={storageRecovery}
+          saveBlocked={saveBlocked}
+          saveFailed={saveFailed}
+          onDownload={(recovery) => downloadRecoveryCopy(recovery)}
+          onDismiss={(recovery) => {
+            dismissRecoveryCopy(recovery)
+            setStorageRecovery(null)
+          }}
+          onResumeSaving={() => {
+            setSaveBlocked(false)
+            setStorageRecovery(null)
+          }}
+          onExport={exportLibrary}
+          onRetry={() => setSaveAttempt((attempt) => attempt + 1)}
+        />
+
         <AnimatePresence>
           {showSearchPanel && (
             <motion.section
@@ -3410,6 +3561,77 @@ function Metric({ label, value }: { label: string; value: string }) {
     <div className="metric">
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  )
+}
+
+function StorageNotice({
+  recovery,
+  saveBlocked,
+  saveFailed,
+  onDownload,
+  onDismiss,
+  onResumeSaving,
+  onExport,
+  onRetry,
+}: {
+  recovery: StorageRecovery | null
+  saveBlocked: boolean
+  saveFailed: boolean
+  onDownload: (recovery: StorageRecovery) => void
+  onDismiss: (recovery: StorageRecovery) => void
+  onResumeSaving: () => void
+  onExport: () => void
+  onRetry: () => void
+}) {
+  if (recovery?.reason === 'unavailable') {
+    return (
+      <div className="notice notice-error storage-notice" role="alert">
+        <p>Browser storage is unavailable, so changes last only for this session. Export a backup to keep them.</p>
+        <div className="storage-notice-actions">
+          <button className="mini-button" type="button" onClick={onExport}><Download size={14} />Export backup</button>
+        </div>
+      </div>
+    )
+  }
+
+  if (recovery) {
+    const skipped = [
+      recovery.skippedTitles ? `${recovery.skippedTitles} saved title${recovery.skippedTitles === 1 ? '' : 's'}` : '',
+      recovery.skippedEvents ? `${recovery.skippedEvents} history event${recovery.skippedEvents === 1 ? '' : 's'}` : '',
+    ].filter(Boolean).join(' and ')
+    const problem = recovery.reason === 'unreadable'
+      ? 'Your saved library could not be read, so GPTNime opened without it.'
+      : `${skipped} could not be read and ${recovery.skippedTitles + recovery.skippedEvents === 1 ? 'was' : 'were'} left out.`
+
+    return (
+      <div className="notice notice-error storage-notice" role="alert">
+        <p>
+          {problem}{' '}
+          {saveBlocked
+            ? 'There was no room to keep a recovery copy, so saving is paused and the original stays untouched. Download it before resuming.'
+            : 'The original was kept as a recovery copy in this browser.'}
+          {saveFailed && ' Your latest changes could not be saved either; export a backup to keep them.'}
+        </p>
+        <div className="storage-notice-actions">
+          <button className="mini-button" type="button" onClick={() => onDownload(recovery)}><Download size={14} />Download {saveBlocked ? 'original' : 'copy'}</button>
+          {saveBlocked
+            ? <button className="mini-button" type="button" onClick={onResumeSaving}>Resume saving</button>
+            : <button className="mini-button" type="button" onClick={() => onDismiss(recovery)}>Dismiss</button>}
+        </div>
+      </div>
+    )
+  }
+
+  if (!saveFailed) return null
+
+  return (
+    <div className="notice notice-error storage-notice" role="alert">
+      <p>Your latest changes could not be saved in this browser. Storage may be full. Export a backup to keep them.</p>
+      <div className="storage-notice-actions">
+        <button className="mini-button" type="button" onClick={onExport}><Download size={14} />Export backup</button>
+        <button className="mini-button" type="button" onClick={onRetry}><RefreshCcw size={14} />Try again</button>
+      </div>
     </div>
   )
 }

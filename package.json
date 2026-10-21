@@ -13,7 +13,8 @@
     "test:watch-startup": "node tests/watch-startup.browser.mjs",
     "test:watch-version": "node tests/watch-version.browser.mjs",
     "test:wco-session": "node tests/wco-session.browser.mjs",
-    "test:wco-preparation": "node tests/wco-preparation.mjs"
+    "test:wco-preparation": "node tests/wco-preparation.mjs",
+    "test:storage": "node tests/storage.browser.mjs"
   },
   "dependencies": {
     "framer-motion": "12.40.0",

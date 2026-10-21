@@ -20,24 +20,49 @@ type Selection = { id: string; episode: number; intent: number; preparation?: Pr
 type Layout = 'cinema' | 'dock' | 'window'
 type PictureWindow = Window & { documentPictureInPicture?: { requestWindow: (options: { width: number; height: number }) => Promise<Window> } }
 
+// One unfinished transfer per video. A quick pop-out/pop-in keeps the first
+// snapshot, which still describes the playback the person was watching.
+const pendingMoves = new WeakMap<HTMLVideoElement, { restore: () => void; blocked: () => void }>()
+
 function moveCinema(host: HTMLElement, destination: HTMLElement, blocked: () => void) {
   const video = host.querySelector('video')
-  const snapshot = video ? { time: video.currentTime, playing: !video.paused && !video.ended, rate: video.playbackRate } : null
-  if (video && snapshot) {
-    // Adoption into another document can reload media even when the element is preserved.
-    video.dataset.cinemaMoving = 'true'
-    const restore = () => queueMicrotask(() => {
-      if (!video.isConnected || video.readyState < 1) return
-      video.currentTime = snapshot.time
-      video.playbackRate = snapshot.rate
-      delete video.dataset.cinemaMoving
-      if (snapshot.playing) void video.play().catch((error) => { if (error?.name !== 'AbortError') blocked() })
-      else video.pause()
-    })
-    video.addEventListener('loadedmetadata', restore, { once: true })
+  const pending = video && pendingMoves.get(video)
+  if (video && pending) {
+    pending.blocked = blocked
     destination.append(host)
-    if (video.readyState >= 1) restore()
-  } else destination.append(host)
+    if (video.readyState >= 1) pending.restore()
+    return
+  }
+  // Without metadata there is no position to carry yet. Leave resume points,
+  // version continuations and autoplay to the player's normal load handlers.
+  if (!video || video.readyState < 1 || video.error) { destination.append(host); return }
+  const snapshot = { time: video.currentTime, playing: !video.paused && !video.ended, rate: video.playbackRate }
+  // Adoption into another document can reload media even when the element is preserved.
+  video.dataset.cinemaMoving = 'true'
+  let settled = false
+  const settle = () => {
+    settled = true
+    pendingMoves.delete(video)
+    video.removeEventListener('loadedmetadata', restore)
+    video.removeEventListener('error', settle)
+    delete video.dataset.cinemaMoving
+  }
+  const transfer = { blocked, restore: () => {} }
+  const restore = () => queueMicrotask(() => {
+    if (settled || !video.isConnected || video.readyState < 1) return
+    settle()
+    video.currentTime = snapshot.time
+    video.playbackRate = snapshot.rate
+    if (snapshot.playing) void video.play().catch((error) => { if (error?.name !== 'AbortError') transfer.blocked() })
+    else video.pause()
+  })
+  transfer.restore = restore
+  pendingMoves.set(video, transfer)
+  video.addEventListener('loadedmetadata', restore)
+  // A reload that fails ends the transfer; the player's own error handling takes over.
+  video.addEventListener('error', settle)
+  destination.append(host)
+  if (video.readyState >= 1) restore()
 }
 
 export default function WatchCinema({ entries, request, onComplete, onDetails, onClose }: Props) {

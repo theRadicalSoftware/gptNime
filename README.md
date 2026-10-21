@@ -53,6 +53,7 @@ npm run build
 npm run lint
 npm run test:cinema
 npm run test:wco
+npm run test:storage
 npm run test:wco-session # requires a desktop display
 ```
 
@@ -69,6 +70,8 @@ GPTNime is local-first. No app backend is required.
 - Focus layout preference is stored under `gptnime-focus-layout-v1`.
 - Cinema preferences, WCO page links, and up to 200 resume points are stored under `gptnime-cinema-v1`. Video URLs and file contents are never persisted. Cinema settings are separate from the library JSON export/import.
 - Use the download and upload buttons in the top bar to export/import JSON backups.
+- If the saved library cannot be read (corrupted text, or individual titles/history events that fail validation), GPTNime first keeps the exact original text under `gptnime-tracker-library-v1-recovery-<timestamp>` and shows a notice with **Download copy**. Readable titles keep working. If there is no room for that copy, saving pauses so the original is never overwritten; download it, then choose **Resume saving**. Up to three copies are kept, and dismissed copies make room first.
+- If the browser refuses a save (for example, storage is full), the app keeps running and shows **Export backup** and **Try again**. The notice clears after the next successful save.
 
 ## Project Structure
 
