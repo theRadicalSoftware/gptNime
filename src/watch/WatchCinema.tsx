@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Info, Link2, LoaderCircle, Maximize2, Minimize2, MonitorUp, PictureInPicture2, Play, RotateCcw, Search, Subtitles, X } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Info, Link2, LoaderCircle, Maximize2, Minimize2, MonitorUp, PictureInPicture2, Play, RotateCcw, Search, SkipForward, Subtitles, X } from 'lucide-react'
 import type { Language, WatchRequest, WatchTitle } from './watchState'
 import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, readWatchState, recentWatch, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
+import { fetchSkipSegments, skipLabels, type SkipSegment } from './skipTimes'
 import { episodePreparation, prefetchEpisode, prefetchSelection, retainPlayback, scheduleEpisodePreparation } from './watchPreparation'
 import './WatchCinema.css'
 
@@ -367,11 +368,14 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const [duration, setDuration] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
   const [playing, setPlaying] = useState(false)
+  // Opening, ending and recap times for this episode, matched to this copy's length.
+  const [skips, setSkips] = useState<{ key: string; segments: SkipSegment[] }>({ key: '', segments: [] })
   const [ahead, setAhead] = useState<{ key: string; episode: number; expiresAt: number } | null>(null)
   const aheadAttempted = useRef(new Set<string>())
   const entryRef = useRef(entry)
   entryRef.current = entry
   const videoRef = useRef<HTMLVideoElement>(null)
+  const screenRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const subtitleRef = useRef<HTMLInputElement>(null)
   const matchesRef = useRef<HTMLDivElement>(null)
@@ -394,12 +398,25 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const savedPage = settings.pages[pageKey] || settings.pages[titleKey]
   const bookmarkPrefix = `${entry.anilistId}:${episode}:`
   const aheadKey = `${entry.id}:${episode}:${settings.language}`
-  const nearEnd = duration > 0 && (duration - currentTime) / speed <= 60
-  const aheadEpisode = !source && intent === 0 ? episode : source?.provider === 'wco' && nextAvailable && nearEnd ? episode + 1 : 0
+  const remaining = duration > 0 ? (duration - currentTime) / speed : Infinity
+  const nearEnd = remaining <= 60
+  // Prepared episodes stay ready for ten minutes, so the next one can start
+  // preparing before the ending credits; Skip ending then lands on it at once.
+  const aheadEpisode = !source && intent === 0 ? episode : source?.provider === 'wco' && nextAvailable && remaining <= 180 ? episode + 1 : 0
   const alternateLanguage = source?.language === 'sub' ? 'dub' : 'sub'
   const alternateId = source?.provider === 'wco' ? versionLeases[alternateLanguage] : undefined
   const onEpisodeRef = useRef(onEpisode)
   onEpisodeRef.current = onEpisode
+  const skipKey = source && !movie && entry.idMal && duration > 0 ? `${entry.idMal}:${episode}:${source.key}:${Math.round(duration)}` : ''
+  const activeSkip = skips.key === skipKey ? skips.segments.find((segment) => currentTime >= segment.start - 0.25 && currentTime < segment.end - 1.5) : undefined
+
+  useEffect(() => {
+    if (!skipKey || !entry.idMal) return
+    const controller = new AbortController()
+    void fetchSkipSegments(entry.idMal, episode, duration, controller.signal)
+      .then((segments) => { if (!controller.signal.aborted) setSkips({ key: skipKey, segments }) }, () => {})
+    return () => controller.abort()
+  }, [skipKey, entry.idMal, episode, duration])
 
   // Wherever the player is (page, dock, pop-out or floating video), a finished
   // WCO episode counts down and continues into the next one. The next episode
@@ -476,7 +493,8 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
 
   useEffect(() => {
     if (!ahead?.expiresAt) return
-    const timer = window.setTimeout(() => setAhead(null), Math.max(0, ahead.expiresAt - Date.now()))
+    // After a long pause the preparation lapses; playing again may prepare it once more.
+    const timer = window.setTimeout(() => { aheadAttempted.current.delete(`${ahead.key}:${ahead.episode}`); setAhead(null) }, Math.max(0, ahead.expiresAt - Date.now()))
     return () => window.clearTimeout(timer)
   }, [ahead])
 
@@ -792,13 +810,64 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     if (playedSeconds / video.duration >= 0.9) { markedRef.current = true; onComplete(entry.id, episode) }
   }
 
+  // A skipped section counts as watched, so skipping the opening and ending
+  // still reaches the 90% mark. An ending that runs to the end finishes it.
+  const finishRef = useRef(() => {})
+  finishRef.current = () => {
+    handleTime(); saveBookmark(); setEnded(true)
+    if (settings.autoNext && source?.provider === 'wco' && tab === 'wco' && nextAvailable) setUpNext(5)
+  }
+  const skipSection = useCallback((segment: SkipSegment) => {
+    const video = videoRef.current
+    if (!video || !Number.isFinite(video.duration)) return
+    playedRanges.current = [...playedRanges.current, [segment.start, segment.end]]
+    const finale = segment.end >= video.duration - 1
+    // A paused video that is moved to its end does not fire 'ended' by itself.
+    if (finale && video.paused) video.addEventListener('seeked', () => { if (video.ended) finishRef.current() }, { once: true })
+    video.currentTime = finale ? video.duration : segment.end
+    setCurrentTime(video.currentTime)
+  }, [])
+
+  // The video's fullscreen control shows the bare video. Hand fullscreen to the
+  // player frame, which keeps the video and its controls plus the Skip button.
+  // That control, or a double-click, then leaves fullscreen as usual.
+  // The frame listens for itself, so this follows the player into a pop-out.
+  useEffect(() => {
+    const screen = screenRef.current
+    if (!screen || !source) return
+    const change = () => {
+      const video = videoRef.current, doc = screen.ownerDocument
+      if (!video || doc.fullscreenElement !== video) return
+      if (screen.matches(':fullscreen')) { void doc.exitFullscreen().then(() => doc.fullscreenElement ? doc.exitFullscreen() : undefined).catch(() => {}); return }
+      void doc.exitFullscreen().then(() => screen.requestFullscreen()).catch(() => { /* Plain video fullscreen is the fallback. */ })
+    }
+    screen.addEventListener('fullscreenchange', change)
+    return () => screen.removeEventListener('fullscreenchange', change)
+  }, [source])
+
+  // S skips too, including in fullscreen, while focus is in the cinema rather
+  // than a text field or the rest of the app.
+  useEffect(() => {
+    const doc = videoRef.current?.ownerDocument
+    if (!activeSkip || !doc) return
+    const key = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 's' || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return
+      const target = event.target instanceof Element ? event.target : null
+      if (target?.closest('input, textarea, select, [contenteditable]')) return
+      if (doc === document && !doc.fullscreenElement && !target?.closest('.cinema-portal')) return
+      event.preventDefault(); skipSection(activeSkip)
+    }
+    doc.addEventListener('keydown', key)
+    return () => doc.removeEventListener('keydown', key)
+  }, [activeSkip, skipSection])
+
   const officialLinks = (entry.externalLinks || []).filter((link, index, links) =>
     /^https?:\/\//.test(link.url) && links.findIndex((item) => item.url === link.url) === index &&
     (link.type?.toLowerCase().includes('streaming') || /crunchyroll|netflix|hulu|hidive|disney|prime video|amazon|youtube|bilibili|tubi|hbo|max|pluto|adult swim|vrv/i.test(link.site)),
   ).slice(0, 4)
 
   return <>
-    <div className={`cinema-screen${source ? ' has-video' : ''}${screenError ? ' has-feedback' : ''}`}>
+    <div ref={screenRef} className={`cinema-screen${source ? ' has-video' : ''}${screenError ? ' has-feedback' : ''}`}>
       {source ? <>
         <video key={sourceGeneration} ref={bindVideo} src={source.url} controls playsInline preload="metadata" aria-label={`${entry.title} ${episodeLabel(entry, episode)} player`}
           onLoadedMetadata={() => {
@@ -821,13 +890,11 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
             if (video && source.autoplay && !autoplayAttempted.current && !video.dataset.cinemaMoving) {
               startVideo(video)
             }
-          }} onWaiting={() => setLoading(true)} onPlaying={() => { setPlaying(true); setLoading(false); setMediaError(''); setEnded(false); setUpNext(null) }} onTimeUpdate={handleTime} onPause={() => { setPlaying(false); saveBookmark() }} onEnded={() => {
-            handleTime(); saveBookmark(); setEnded(true)
-            if (settings.autoNext && source.provider === 'wco' && tab === 'wco' && nextAvailable) setUpNext(5)
-          }} onError={handleMediaError}>
+          }} onWaiting={() => setLoading(true)} onPlaying={() => { setPlaying(true); setLoading(false); setMediaError(''); setEnded(false); setUpNext(null) }} onTimeUpdate={handleTime} onPause={() => { setPlaying(false); saveBookmark() }} onEnded={() => finishRef.current()} onError={handleMediaError}>
           {subtitle && <track key={subtitle.url} src={subtitle.url} kind="subtitles" srcLang="en" label={subtitle.name} default onError={() => setError('These subtitles could not be loaded. Choose a valid WebVTT (.vtt) file.')} />}
         </video>
         {loading && !mediaError && <span className="cinema-loading" role="status">Loading video…</span>}
+        {activeSkip && !mediaError && <button key={`${activeSkip.kind}:${activeSkip.start}`} className="cinema-skip" title="Times from AniSkip, a community database" onClick={() => skipSection(activeSkip)}>{skipLabels[activeSkip.kind]}<SkipForward size={14} fill="currentColor" /></button>}
         {mediaError && <div className="cinema-media-error" role="alert"><Film size={26} /><p>{mediaError}</p>{source.provider === 'wco' && <button className="cinema-button primary" disabled={preparing} onClick={() => { chooseTab('wco'); void prepareEpisode({ refresh: true }) }}>{preparing ? `Preparing ${itemLabel}…` : `Retry ${itemLabel}`}</button>}<button className="cinema-button" onClick={clearSource}>Choose another source</button></div>}
       </> : <div className="cinema-screen-intro">
         <span className="cinema-night-tag"><span /> YOUR AFTER-HOURS ESCAPE</span>

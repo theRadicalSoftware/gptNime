@@ -117,6 +117,13 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-media-error { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 15px; background: #0d121af5; padding: 25px; text-align: center; }
 .cinema-media-error p { max-width: 420px; }
 .cinema-loading { position: absolute; top: 14px; left: 14px; border-radius: 5px; background: #000c; padding: 8px 12px; font-size: 11px; pointer-events: none; }
+.cinema-skip { position: absolute; right: 16px; bottom: 64px; z-index: 2; display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 9px 15px; border: 1px solid #e5c17c80; border-radius: 8px; background: #0b0d10d9; color: #f4eee3; font-size: 12px; font-weight: 600; letter-spacing: .01em; box-shadow: 0 6px 24px #0008; backdrop-filter: blur(6px); cursor: pointer; animation: cinema-skip-in .28s ease-out both; }
+.cinema-skip:hover { background: var(--cinema-gold); color: #221d15; border-color: var(--cinema-gold); }
+.cinema-skip svg { flex: none; }
+@keyframes cinema-skip-in { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .cinema-skip { animation: none; } }
+.cinema-screen:fullscreen { aspect-ratio: auto; width: 100%; height: 100%; border: 0; border-radius: 0; }
+.cinema-screen:fullscreen .cinema-skip { right: 32px; bottom: 88px; min-height: 42px; padding: 11px 18px; font-size: 14px; }
 .cinema-finished { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px; margin-bottom: 15px; border: 1px solid #438e8140; border-radius: 9px; background: #438e8110; font-size: 11px; color: #b8d3cb; }
 .cinema-finished > span { display: flex; gap: 8px; align-items: center; }
 .cinema-finished-actions { flex-shrink: 0; }
@@ -157,6 +164,8 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-layout-dock .cinema-screen { border: 0; border-radius: 0; width: 100%; }
 /* The video is in the browser's floating window; keep a slim strip with its placeholder. */
 .cinema-layout-dock.is-floating .cinema-screen { aspect-ratio: auto; height: 44px; }
+.cinema-layout-dock.is-floating .cinema-skip { display: none; }
+.cinema-layout-dock .cinema-skip { right: 10px; bottom: 50px; min-height: 30px; padding: 6px 11px; font-size: 11px; }
 .cinema-layout-dock .cinema-library, .cinema-layout-dock .cinema-source-desk, .cinema-layout-dock .cinema-night-tag, .cinema-layout-dock .cinema-screen-intro > p, .cinema-layout-dock .cinema-screen-footnote, .cinema-layout-dock .cinema-finished { display: none; }
 .cinema-layout-dock .cinema-screen-intro { padding: 20px; max-width: 95%; }
 .cinema-layout-dock .cinema-screen h3 { font-size: 20px; margin-bottom: 0; }

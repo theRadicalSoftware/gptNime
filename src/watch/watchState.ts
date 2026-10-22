@@ -1,6 +1,7 @@
 export type WatchTitle = {
   id: string
   anilistId: number
+  idMal?: number | null
   title: string
   titleEnglish?: string
   synonyms?: string[]

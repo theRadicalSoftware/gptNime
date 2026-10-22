@@ -372,6 +372,86 @@ try {
   passed('390px mobile cinema and dock fit the viewport')
   await page.getByRole('button', { name: 'Close cinema' }).click()
 
+  // AniSkip times are matched to this copy's length (version-test.webm runs 120 s).
+  const skipContext = await browser.newContext({ viewport: { width: 1280, height: 900 }, storageState: storage({ library: [{ ...title(205, 'Samurai Champloo', 2, 26), idMal: 205 }], history: [] }) })
+  await skipContext.route('**/api/wco/prefetch', (route) => route.fulfill({ json: { ready: false, expiresAt: 0 } }))
+  await skipContext.route('**/api/wco/status', (route) => route.fulfill({ json: { available: false } }))
+  await skipContext.route('https://graphql.anilist.co/**', (route) => route.fulfill({ json: { data: { Media: { recommendations: { nodes: [] } } } } }))
+  const skipRequests = []
+  await skipContext.route('https://api.aniskip.com/**', (route) => {
+    skipRequests.push(route.request().url())
+    route.fulfill({ headers: { 'access-control-allow-origin': '*' }, json: { found: true, statusCode: 200, results: [
+      { interval: { startTime: 30, endTime: 60 }, skipType: 'op', skipId: 'other-cut', episodeLength: 150 },
+      { interval: { startTime: 0, endTime: 20 }, skipType: 'op', skipId: 'opening', episodeLength: 119.4 },
+      { interval: { startTime: 100, endTime: 121 }, skipType: 'ed', skipId: 'ending', episodeLength: 121 },
+    ] } })
+  })
+  const skipPage = await skipContext.newPage()
+  skipPage.on('pageerror', (error) => errors.push(error.message))
+  await skipPage.goto(base)
+  const segments = await skipPage.evaluate(async () => (await import('/src/watch/skipTimes.ts')).skipSegments([
+    { interval: { startTime: 0, endTime: 90 }, skipType: 'op', episodeLength: 1400 },
+    { interval: { startTime: 1300, endTime: 1390 }, skipType: 'ed', episodeLength: 1400 },
+    { interval: { startTime: 1310, endTime: 1400 }, skipType: 'mixed-ed', episodeLength: 1395 },
+    { interval: { startTime: 600, endTime: 602 }, skipType: 'recap', episodeLength: 1405 },
+    { interval: { startTime: 'x', endTime: 9 }, skipType: 'op', episodeLength: 1405 },
+  ], 1405))
+  assert.deepEqual(segments, [{ kind: 'opening', start: 0, end: 90 }, { kind: 'ending', start: 1305, end: 1395 }], 'Closest-length times win; endings follow the length difference; tiny and malformed sections are ignored')
+  await skipPage.locator('.anime-tv-fab').click()
+  await skipPage.getByRole('button', { name: 'Your files Play in cinema' }).click()
+  await skipPage.getByLabel('Choose local video', { exact: true }).setInputFiles('tests/fixtures/version-test.webm')
+  await skipPage.waitForFunction(() => document.querySelector('video')?.readyState >= 2)
+  await skipPage.locator('video').evaluate((video) => { video.muted = true })
+  const skipOpening = skipPage.getByRole('button', { name: 'Skip opening' })
+  await skipOpening.waitFor()
+  assert.match(skipRequests[0], /\/v2\/skip-times\/205\/3\?/)
+  await skipPage.screenshot({ path: `${output}/12-skip-opening.png` })
+  await skipOpening.click()
+  assert.ok(Math.abs(await skipPage.locator('video').evaluate((video) => video.currentTime) - 20) < .3)
+  await skipOpening.waitFor({ state: 'detached' })
+  // Watch the middle quickly; the skipped opening and ending count toward the 90% mark.
+  await skipPage.locator('video').evaluate((video) => { video.playbackRate = 16; return video.play() })
+  await skipPage.waitForFunction(() => document.querySelector('video').currentTime >= 99.4, null, { timeout: 15000 })
+  await skipPage.locator('video').evaluate((video) => video.pause())
+  await skipPage.getByRole('button', { name: 'Skip ending' }).waitFor()
+  assert.equal(await skipPage.getByRole('button', { name: 'Skip opening' }).count(), 0)
+  await skipPage.getByLabel('Cinema episode number').focus()
+  await skipPage.keyboard.press('s')
+  assert.equal(await skipPage.locator('video').evaluate((video) => video.currentTime < 100), true, 'S in a text field types instead of skipping')
+  await skipPage.locator('video').focus()
+  await skipPage.keyboard.press('s')
+  await skipPage.waitForFunction(() => document.querySelector('video').ended)
+  await skipPage.waitForFunction(() => JSON.parse(localStorage.getItem('gptnime-tracker-library-v1')).library[0].progress === 3)
+  await skipPage.getByText('Ready for the next episode?').waitFor()
+  passed('Skip opening/ending follows AniSkip times matched to this copy, works by button or S, and skipped sections still count as watched')
+  await skipPage.getByRole('button', { name: 'Restart current video' }).click()
+  await skipOpening.waitFor()
+  await skipPage.locator('video').dblclick()
+  const fullscreen = await skipPage.waitForFunction(() => document.fullscreenElement?.className, null, { timeout: 5000 }).then((handle) => handle.jsonValue(), () => null)
+  if (fullscreen) {
+    assert.match(fullscreen, /cinema-screen/, 'Fullscreen shows the player frame, keeping Skip on screen')
+    assert.equal(await skipOpening.isVisible(), true)
+    await skipPage.screenshot({ path: `${output}/13-skip-fullscreen.png` })
+    // Real pointer input reaches the video's own controls, and Skip works in fullscreen.
+    assert.equal(await skipPage.evaluate(() => document.elementFromPoint(innerWidth / 2, innerHeight / 2)?.tagName), 'VIDEO')
+    await skipPage.mouse.click(24, (await skipPage.evaluate(() => innerHeight)) - 48)
+    await skipPage.waitForFunction(() => !document.querySelector('video').paused)
+    await skipOpening.click()
+    assert.ok(await skipPage.locator('video').evaluate((video) => video.currentTime >= 20))
+    assert.match(await skipPage.evaluate(() => document.fullscreenElement?.className), /cinema-screen/)
+    await skipPage.mouse.dblclick(640, 400)
+    await skipPage.waitForFunction(() => !document.fullscreenElement, null, { timeout: 5000 })
+    await skipPage.locator('video').dblclick()
+    await skipPage.waitForFunction(() => document.fullscreenElement?.classList.contains('cinema-screen'), null, { timeout: 5000 })
+    await skipPage.waitForTimeout(300)
+    const size = await skipPage.evaluate(() => ({ width: innerWidth, height: innerHeight }))
+    await skipPage.mouse.move(size.width / 2, size.height - 48)
+    await skipPage.mouse.click(size.width - 72, size.height - 48)
+    await skipPage.waitForFunction(() => !document.fullscreenElement, null, { timeout: 5000 })
+    passed('Video fullscreen hands over to the player frame: Skip stays visible, the video controls work, and double-click or the fullscreen control leaves it')
+  } else process.stdout.write('- Fullscreen is unavailable in this browser mode; run with CINEMA_HEADED=1\n')
+  await skipContext.close()
+
   // Native Document PiP needs a desktop window. Run this section with CINEMA_HEADED=1.
   if (process.env.CINEMA_HEADED === '1') {
     const nativePage = await context.newPage()

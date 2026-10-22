@@ -3,12 +3,14 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
 import { createServer } from 'vite'
 
-const base = 'http://127.0.0.1:5198'
-const server = await createServer({ server: { host: '127.0.0.1', port: 5198, strictPort: true } })
+// Another local project may hold the default port; WCO_TEST_PORT moves this suite.
+const port = Number(process.env.WCO_TEST_PORT) || 5198
+const base = `http://127.0.0.1:${port}`
+const server = await createServer({ server: { host: '127.0.0.1', port, strictPort: true } })
 await server.listen()
 let browser
 try {
-  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage, providerCapacityMessage, capacityRetryDelay, providerBrowser, RecentSources, movieSearchQueries, relevantMovieCandidates } = await server.ssrLoadModule('/server/wco.ts')
+  const { episodePage, videoSource, matchingEpisodes, selectionError, episodeLinks, titleKey, automaticMatch, searchCandidates, searchLinks, searchEpisodeCandidates, providerAccessMessage, providerCapacityMessage, capacityRetryDelay, providerBrowser, RecentSources, preparedLifetime, leaseLifetime, movieSearchQueries, relevantMovieCandidates } = await server.ssrLoadModule('/server/wco.ts')
   assert.equal(providerBrowser(undefined), 'chrome')
   assert.equal(providerBrowser('brave'), 'brave')
   assert.equal(providerBrowser('/usr/bin/untrusted'), null)
@@ -33,7 +35,10 @@ try {
   assert.equal(recent.get(episode, 26, 'dub', false), undefined)
   assert.equal(recent.get(episode, 25, 'dub', true), undefined)
   assert.equal(new RecentSources().get(episode, 25, 'dub', false), undefined, 'Separate browser caches cannot share a signed source')
-  clock = 90_000
+  assert.equal(preparedLifetime, 10 * 60_000)
+  clock = preparedLifetime - 1
+  assert.equal(recent.get(episode, 25, 'dub', false), prepared, 'An unplayed preparation stays ready for ten minutes')
+  clock = preparedLifetime
   assert.equal(recent.get(episode, 25, 'dub', false), undefined)
   recent.put(prepared, 25, false)
   assert.equal(recent.get(episode, 25, 'dub', false, true), undefined)
@@ -50,9 +55,13 @@ try {
   assert.equal(new RecentSources().retain(initialId), false, 'Playback leases stay in their own browser cache')
   clock += 60_000
   assert.equal(retained.retain(initialId), true)
+  assert.equal(retained.expiresAt(active, 25, false), clock - 60_000 + preparedLifetime, 'Renewal never shortens the prepared lifetime')
+  clock += preparedLifetime - 90_000
+  assert.equal(retained.retain(initialId), true)
+  assert.equal(retained.expiresAt(active, 25, false), clock + leaseLifetime)
   clock += 60_000
-  assert.equal(retained.get(episode, 25, 'dub', false), active, 'An active source survives its original 90-second expiry')
-  clock += 30_000
+  assert.equal(retained.get(episode, 25, 'dub', false), active, 'An active source survives its prepared lifetime')
+  clock += 40_000
   assert.equal(retained.retain(initialId), false, 'A stopped heartbeat cannot revive an expired source')
   retained.put(active, 25, false)
   assert.notEqual(active.playbackId, initialId)
@@ -75,7 +84,7 @@ try {
   pair.get(sub.pageUrl, 25, 'sub', false, true)
   clock += 60_000
   assert.deepEqual(pair.retainPair(sub.playbackId, dub.playbackId), { retained: false, alternateRetained: false })
-  clock += 30_000
+  clock += preparedLifetime
   assert.equal(pair.get(dub.pageUrl, 25, 'dub', false), undefined)
   console.log('✓ Either playing version keeps its alternate ready; an expired primary cannot keep another source alive')
   const playing = new RecentSources(() => clock)
@@ -90,7 +99,7 @@ try {
   for (let i = 7; i <= 12; i++) assert.ok(playing.get(episode, i, 'dub', false), `Recent speculative episode ${i} stays within the bound`)
   clock += 30_000
   assert.deepEqual(playing.retainPair(watching.playbackId, alternate.playbackId), { retained: true, alternateRetained: true })
-  clock += 90_000
+  clock += preparedLifetime
   assert.equal(playing.retain(watching.playbackId), false, 'A lease protects only while playback keeps renewing it')
   playing.put({ ...prepared }, 40, false)
   assert.equal(playing.get(episode, 25, 'dub', false), undefined)

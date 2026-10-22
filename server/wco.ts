@@ -74,8 +74,13 @@ type PlaybackSource = {
 }
 type ResolveResult = PlaybackSource | { kind: 'choices'; message: string; choices: (Link & { language?: 'sub' | 'dub' })[] }
 
-// Briefly reuse an already prepared episode when returning to it or switching
-// versions. These signed sources stay in server memory and never cross browsers.
+// Reuse an already prepared episode when it is clicked, returned to or switched
+// to. WCO's signed links measured valid for well over ten minutes, so a hover,
+// startup or next-episode preparation stays ready that long instead of being
+// prepared again. These sources stay in server memory and never cross browsers.
+export const preparedLifetime = 10 * 60_000
+export const leaseLifetime = 90_000
+const leaseCeiling = 4 * 60 * 60_000
 export class RecentSources {
   private entries = new Map<string, { result: PlaybackSource; expires: number; created: number; leased: boolean; timer: ReturnType<typeof setTimeout> }>()
   constructor(private now: () => number = Date.now) {}
@@ -99,10 +104,10 @@ export class RecentSources {
   put(result: PlaybackSource, episode: number, movie: boolean) {
     const key = this.key(result.pageUrl, episode, result.language, movie)
     this.forget(key)
-    const timer = setTimeout(() => this.entries.delete(key), 90_000)
+    const timer = setTimeout(() => this.entries.delete(key), preparedLifetime)
     timer.unref()
     result.playbackId = randomUUID()
-    this.entries.set(key, { result, expires: this.now() + 90_000, created: this.now(), leased: false, timer })
+    this.entries.set(key, { result, expires: this.now() + preparedLifetime, created: this.now(), leased: false, timer })
     if (this.entries.size > 8) {
       // Speculative sources make room first. A version the cinema is actively
       // renewing must survive later hover, chooser and next-episode preparation.
@@ -116,9 +121,10 @@ export class RecentSources {
       // A playing cinema can keep its own source ready for refresh. No revival
       // after expiry, unlimited retention, or sharing between browser profiles.
       const now = this.now()
-      if (entry.expires <= now || entry.created + 4 * 60 * 60_000 <= now) { this.forget(key); return false }
+      if (entry.expires <= now || entry.created + leaseCeiling <= now) { this.forget(key); return false }
       clearTimeout(entry.timer)
-      entry.expires = Math.min(now + 90_000, entry.created + 4 * 60 * 60_000)
+      // Renewal extends, never shortens, the prepared lifetime.
+      entry.expires = Math.max(entry.expires, Math.min(now + leaseLifetime, entry.created + leaseCeiling))
       entry.timer = setTimeout(() => this.entries.delete(key), entry.expires - now)
       entry.timer.unref()
       // Renewal also counts as recent use, so eviction order follows playback.

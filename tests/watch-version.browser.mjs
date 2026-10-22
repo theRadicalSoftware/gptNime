@@ -3,9 +3,11 @@ import { readFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
 import { createServer } from 'vite'
 
-const base = 'http://127.0.0.1:5194'
+// Another local project may hold the default port; VERSION_TEST_PORT moves this suite.
+const port = Number(process.env.VERSION_TEST_PORT) || 5194
+const base = `http://127.0.0.1:${port}`
 const until = async predicate => { for (let n = 0; n < 100; n++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 50)) }; assert.fail('Timed out waiting for fixture request') }
-const server = await createServer({ server: { host: '127.0.0.1', port: 5194, strictPort: true } })
+const server = await createServer({ server: { host: '127.0.0.1', port, strictPort: true } })
 await server.listen()
 let browser
 try {
