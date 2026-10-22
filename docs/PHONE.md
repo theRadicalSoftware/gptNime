@@ -25,7 +25,7 @@ In your SSH app, add a **local port forward** to your existing computer connecti
 
 - **Termius**: open the host → **Port Forwarding** → **Local** with the values above, then start the forward.
 - **JuiceSSH**: **Connections** → **Port Forwards** → add a local forward through the computer's connection.
-- **Termux**: `ssh -N -L 127.0.0.1:5190:127.0.0.1:5190 <you>@<computer's Tailscale name>`
+- **Termux**: `ssh -N -L 127.0.0.1:5190:127.0.0.1:5190 <you>@<computer's 100.x address>`. Termux uses its own DNS, so Tailscale names such as the computer's MagicDNS name do not resolve there; use the address from `tailscale ip -4` on the computer. The Tailscale app must be connected on the phone. After the password, `-N` prints nothing: that is the tunnel running. Leave Termux open (its notification's **Acquire wakelock** keeps it alive in the background).
 
 Then open **`http://127.0.0.1:5190`** in the phone's browser. Keep using that exact address, so the phone always reopens the same saved settings. Adding it to the home screen makes it feel like an app.
 
