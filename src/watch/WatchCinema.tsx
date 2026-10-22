@@ -17,7 +17,7 @@ type PlaybackPosition = { time: number; paused: boolean; rate: number; volume: n
 type Preparation = { url?: string; language?: Language; search?: boolean; choose?: boolean; refresh?: boolean; continuation?: PlaybackPosition }
 type Match = { url: string; title: string; language?: Language }
 type Selection = { id: string; episode: number; intent: number; preparation?: Preparation }
-type Layout = 'cinema' | 'dock' | 'window' | 'float'
+type Layout = 'cinema' | 'dock' | 'window'
 type PictureWindow = Window & { documentPictureInPicture?: { requestWindow: (options: { width: number; height: number }) => Promise<Window> } }
 
 // One unfinished transfer per video. A quick pop-out/pop-in keeps the first
@@ -74,10 +74,14 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
   const [layout, setLayout] = useState<Layout>('cinema')
   const [query, setQuery] = useState('')
   const [windowError, setWindowError] = useState('')
+  // 'live': this cinema's video is floating. 'waiting': the floating window
+  // still holds a video that a Sub/Dub or episode change removed; Chrome
+  // keeps it as a paused frame until the replacement takes over.
+  const [floating, setFloating] = useState<'off' | 'live' | 'waiting'>('off')
+  const floatWanted = useRef(false)
   const [host] = useState(() => document.createElement('div'))
   const childRef = useRef<Window | null>(null)
   const restoreRef = useRef<(() => void) | null>(null)
-  const popOutRef = useRef<(mode: 'window' | 'float', automatic?: boolean) => Promise<void>>(async () => {})
   const closeRef = useRef(onClose)
   closeRef.current = onClose
   const entry = entries.find((item) => item.id === selection.id)
@@ -151,6 +155,75 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
     }
   }, [host, layout])
 
+  // The browser's own video Picture-in-Picture: a frameless, always-on-top
+  // window over every tab and app. The video element stays in the page.
+  const floatVideo = useCallback(async (automatic = false) => {
+    const video = host.querySelector('video')
+    const current = document.pictureInPictureElement
+    if (!automatic) setWindowError('')
+    if (current && (host.contains(current) || !current.isConnected)) {
+      if (automatic) return
+      floatWanted.current = false
+      await document.exitPictureInPicture().catch(() => {})
+      return
+    }
+    if (!video || video.readyState < 1 || !document.pictureInPictureEnabled) {
+      if (!automatic) setWindowError(document.pictureInPictureEnabled ? 'Float becomes available once the video is ready.' : 'This browser cannot float video.')
+      return
+    }
+    floatWanted.current = true
+    try { await video.requestPictureInPicture() } catch {
+      floatWanted.current = false
+      if (!automatic) setWindowError('The browser did not float the video. Press Float again.')
+    }
+  }, [host])
+
+  useEffect(() => {
+    const sync = () => {
+      const current = document.pictureInPictureElement
+      setFloating(!current ? 'off' : host.contains(current) ? 'live' : current.isConnected ? 'off' : 'waiting')
+    }
+    const entered = (event: Event) => {
+      const video = event.target as HTMLVideoElement
+      sync()
+      video.addEventListener('leavepictureinpicture', () => {
+        sync()
+        // Closed or sent back to the tab by the person, not replaced by a new source.
+        if (video.isConnected) floatWanted.current = false
+      }, { once: true })
+    }
+    const ready = (event: Event) => {
+      const video = event.target
+      if (!(video instanceof HTMLVideoElement)) return
+      const current = document.pictureInPictureElement
+      // An open float may switch to another video without a new click.
+      if (floatWanted.current && current && !current.isConnected) void video.requestPictureInPicture().catch(() => { floatWanted.current = false; void document.exitPictureInPicture().catch(() => {}) })
+      sync()
+    }
+    const observer = new MutationObserver(sync)
+    observer.observe(host, { childList: true, subtree: true })
+    host.addEventListener('enterpictureinpicture', entered, true)
+    host.addEventListener('loadedmetadata', ready, true)
+    return () => {
+      observer.disconnect()
+      host.removeEventListener('enterpictureinpicture', entered, true)
+      host.removeEventListener('loadedmetadata', ready, true)
+      // Closing the cinema ends a float it started, including a removed video's frame.
+      const current = document.pictureInPictureElement
+      if (current && (host.contains(current) || !current.isConnected)) void document.exitPictureInPicture().catch(() => {})
+    }
+  }, [host])
+
+  // Browsers with automatic Picture-in-Picture (Chrome 134+) call this when a
+  // tab playing audible video is hidden, and close the float when it returns.
+  useEffect(() => {
+    if (layout === 'window' || !('mediaSession' in navigator)) return
+    const session = navigator.mediaSession
+    const action = 'enterpictureinpicture' as MediaSessionAction
+    try { session.setActionHandler(action, () => void floatVideo(true)) } catch { return }
+    return () => { try { session.setActionHandler(action, null) } catch { /* unsupported */ } }
+  }, [layout, floatVideo])
+
   const popIn = () => {
     const child = childRef.current
     restoreRef.current?.()
@@ -158,25 +231,17 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
     child?.close()
   }
 
-  // 'window' carries the whole cinema into a separate window. 'float' carries
-  // the mini-player into an always-on-top Picture-in-Picture window, so it
-  // stays over other tabs and apps. Automatic floats come from the browser
-  // when a playing tab is hidden; they have no gesture, so no popup fallback.
-  const popOut = async (mode: 'window' | 'float', automatic = false) => {
-    if (childRef.current && !childRef.current.closed) { if (!automatic) childRef.current.focus(); return }
-    if (!automatic) setWindowError('')
-    const returnLayout: Layout = mode === 'float' ? (layout === 'cinema' ? 'cinema' : 'dock') : 'cinema'
-    const panel = host.querySelector('.watch-cinema')?.getBoundingClientRect()
-    const size = mode === 'window' ? { width: 1080, height: 760 } : layout === 'dock' && panel ? { width: Math.round(panel.width), height: Math.round(panel.height) } : { width: 480, height: 370 }
+  const popOut = async () => {
+    if (childRef.current && !childRef.current.closed) { childRef.current.focus(); return }
+    setWindowError('')
     try {
       const api = (window as PictureWindow).documentPictureInPicture
-      if (!api && automatic) return
       const child = api
-        ? await api.requestWindow(size)
-        : window.open('about:blank', 'gptnime-cinema', `popup,width=${size.width},height=${size.height}`)
+        ? await api.requestWindow({ width: 1080, height: 760 })
+        : window.open('about:blank', 'gptnime-cinema', 'popup,width=1080,height=760')
       if (!child) { setWindowError('Allow popups for gptNime, then try Pop out again.'); return }
       if (!host.isConnected) { child.close(); return }
-      child.document.title = mode === 'float' ? 'GPTNime · Mini player' : 'GPTNime · Cinema'
+      child.document.title = 'GPTNime · Cinema'
       // Video has no per-element referrerPolicy. Preserve the cinema document's
       // privacy policy before moving media into either kind of player window.
       const referrer = child.document.createElement('meta')
@@ -191,13 +256,13 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
       child.document.body.className = 'cinema-window-body'
       moveCinema(host, child.document.body, () => setWindowError('Press play to continue in this window.'))
       childRef.current = child
-      setLayout(mode)
+      setLayout('window')
       let returned = false
       const restore = () => {
         if (returned) return
         returned = true
         moveCinema(host, document.body, () => setWindowError('Press play to continue.'))
-        setLayout(returnLayout)
+        setLayout('cinema')
         child.removeEventListener('pagehide', restore)
         restoreRef.current = null
       }
@@ -210,27 +275,15 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
       const originalRestore = restoreRef.current
       restoreRef.current = () => { originalRestore?.(); window.clearInterval(interval) }
     } catch {
-      if (!automatic) setWindowError('This browser could not open a player window. You can keep watching here or use the mini-player.')
+      setWindowError('This browser could not open a player window. You can keep watching here or use the mini-player.')
     }
   }
-  popOutRef.current = popOut
-
-  // Browsers with automatic Picture-in-Picture (Chrome 134+) call this when a
-  // tab that is playing audible video is hidden, then close the window and
-  // return the player when the tab is shown again.
-  useEffect(() => {
-    if (layout === 'window' || layout === 'float' || !('mediaSession' in navigator)) return
-    const session = navigator.mediaSession
-    const action = 'enterpictureinpicture' as MediaSessionAction
-    try { session.setActionHandler(action, () => void popOutRef.current('float', true)) } catch { return }
-    return () => { try { session.setActionHandler(action, null) } catch { /* unsupported */ } }
-  }, [layout])
 
   const tune = (item: WatchTitle) => setSelection((previous) => ({ id: item.id, episode: firstEpisode(item), intent: previous.intent + 1 }))
   const visibleEntries = entries.filter((item) => item.title.toLowerCase().includes(query.toLowerCase()))
 
   return createPortal(
-    <div className={`cinema-overlay ${layout === 'float' ? 'cinema-layout-dock cinema-layout-float' : `cinema-layout-${layout}`}`} onMouseDown={(event) => {
+    <div className={`cinema-overlay cinema-layout-${layout}${floating === 'live' ? ' is-floating' : ''}`} onMouseDown={(event) => {
       if (layout === 'cinema' && event.target === event.currentTarget) setLayout('dock')
     }}>
       <section id="anime-channel-panel" className="watch-cinema" role="dialog" aria-modal={layout === 'cinema' ? true : undefined} aria-label="GPTNime cinema">
@@ -238,14 +291,11 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
           <span className="cinema-emblem"><Clapperboard size={22} /></span>
           <div className="cinema-heading-copy"><span className="eyebrow">GPTNime cinema</span><h2 title={entry?.title}>{entry?.title || 'A good night for anime'}</h2></div>
           <div className="cinema-window-actions">
-            {layout === 'window' ? <button className="cinema-icon" aria-label="Pop player back in" title="Pop in" onClick={popIn}><MonitorUp size={18} /></button> : layout === 'float' ? <>
-              <button className="cinema-icon" aria-label="Expand cinema" title="Expand cinema" onClick={() => { popIn(); setLayout('cinema') }}><Maximize2 size={18} /></button>
-              <button className="cinema-icon" aria-label="Return mini-player to page" title="Return to page" onClick={popIn}><PictureInPicture2 size={18} /></button>
-            </> : <>
+            {layout === 'window' ? <button className="cinema-icon" aria-label="Pop player back in" title="Pop in" onClick={popIn}><MonitorUp size={18} /></button> : <>
               <button className="cinema-icon" aria-label={layout === 'dock' ? 'Expand cinema' : 'Dock mini-player'} title={layout === 'dock' ? 'Expand cinema' : 'Keep watching while browsing'} onClick={() => setLayout(layout === 'dock' ? 'cinema' : 'dock')}>{layout === 'dock' ? <Maximize2 size={18} /> : <Minimize2 size={18} />}</button>
               {layout === 'dock'
-                ? <button className="cinema-icon" aria-label="Float mini-player on top" title="Float on top of other tabs and windows" onClick={() => void popOut('float')}><PictureInPicture2 size={18} /></button>
-                : <button className="cinema-icon" aria-label="Pop out player" title="Pop out player" onClick={() => void popOut('window')}><MonitorUp size={18} /></button>}
+                ? <button className={`cinema-icon${floating !== 'off' ? ' is-active' : ''}`} aria-label={floating !== 'off' ? 'Return floating video' : 'Float video on top'} aria-pressed={floating !== 'off'} title={floating !== 'off' ? 'Return the video to the mini-player' : 'Float the video on top of other tabs and windows'} onClick={() => void floatVideo()}><PictureInPicture2 size={18} /></button>
+                : <button className="cinema-icon" aria-label="Pop out player" title="Pop out player" onClick={() => void popOut()}><MonitorUp size={18} /></button>}
             </>}
             <button data-cinema-focus className="cinema-icon" aria-label="Close cinema" title="Close cinema" onClick={onClose}><X size={19} /></button>
           </div>
@@ -253,7 +303,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
         {windowError && <p className="cinema-message cinema-error" role="alert">{windowError}</p>}
         <div className="cinema-workspace">
           <div className="cinema-main">
-            {entry ? <EpisodePlayer key={`${entry.id}:${selection.episode}`} entry={entry} episode={selection.episode} intent={selection.intent} preparation={selection.preparation} onComplete={onComplete} onEpisode={(episode, preparation) => setSelection((previous) => ({ id: entry.id, episode, preparation, intent: previous.intent + 1 }))} onRevealSource={() => { if (layout === 'float') popIn(); if (layout === 'dock' || layout === 'float') setLayout('cinema') }} onDetails={() => { if (layout === 'cinema') setLayout('dock'); onDetails(entry.id) }} /> : <div className="cinema-empty"><Film size={38} /><h3>{entries.length ? 'Choose your next watch' : 'Your cinema starts here'}</h3><p>{entries.length ? 'Pick a title from your library to open its watch desk.' : 'Add a show or movie to your library, then press Watch.'}</p>{!entries.length && <button className="cinema-button primary" onClick={onClose}>Back to gptNime</button>}</div>}
+            {entry ? <EpisodePlayer key={`${entry.id}:${selection.episode}`} entry={entry} episode={selection.episode} intent={selection.intent} preparation={selection.preparation} onComplete={onComplete} onEpisode={(episode, preparation) => setSelection((previous) => ({ id: entry.id, episode, preparation, intent: previous.intent + 1 }))} onRevealSource={() => { if (layout === 'dock') setLayout('cinema') }} onDetails={() => { if (layout !== 'window') setLayout('dock'); onDetails(entry.id) }} /> : <div className="cinema-empty"><Film size={38} /><h3>{entries.length ? 'Choose your next watch' : 'Your cinema starts here'}</h3><p>{entries.length ? 'Pick a title from your library to open its watch desk.' : 'Add a show or movie to your library, then press Watch.'}</p>{!entries.length && <button className="cinema-button primary" onClick={onClose}>Back to gptNime</button>}</div>}
           </div>
           <aside className="cinema-library">
             <div className="cinema-library-heading"><div><span className="eyebrow">Your collection</span><h3>Tonight’s lineup</h3></div><span className="cinema-count">{entries.length}</span></div>
@@ -344,6 +394,31 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const aheadEpisode = !source && intent === 0 ? episode : source?.provider === 'wco' && nextAvailable && nearEnd ? episode + 1 : 0
   const alternateLanguage = source?.language === 'sub' ? 'dub' : 'sub'
   const alternateId = source?.provider === 'wco' ? versionLeases[alternateLanguage] : undefined
+  const onEpisodeRef = useRef(onEpisode)
+  onEpisodeRef.current = onEpisode
+
+  // Title, artwork and buttons for the browser's floating video window and
+  // media keys. Previous/Next change episodes like the cinema's own arrows.
+  useEffect(() => {
+    if (!('mediaSession' in navigator) || !source) return
+    const session = navigator.mediaSession
+    if (typeof MediaMetadata !== 'undefined') session.metadata = new MediaMetadata({ title: movie ? entry.title : `${entry.title} · ${episodeLabel(entry, episode)}`, artist: 'GPTNime', artwork: entry.coverImage ? [{ src: new URL(entry.coverImage, document.baseURI).href }] : [] })
+    const seek = (offset: number) => {
+      const video = videoRef.current
+      if (video && Number.isFinite(video.duration)) video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + offset))
+    }
+    const handlers: [MediaSessionAction, MediaSessionActionHandler | null][] = [
+      ['seekbackward', (details) => seek(-(details.seekOffset || 10))],
+      ['seekforward', (details) => seek(details.seekOffset || 10)],
+      ['previoustrack', !movie && episode > 1 ? () => onEpisodeRef.current(episode - 1) : null],
+      ['nexttrack', nextAvailable ? () => onEpisodeRef.current(episode + 1) : null],
+    ]
+    for (const [action, handler] of handlers) { try { session.setActionHandler(action, handler) } catch { /* unsupported */ } }
+    return () => {
+      for (const [action] of handlers) { try { session.setActionHandler(action, null) } catch { /* unsupported */ } }
+      session.metadata = null
+    }
+  }, [entry, episode, movie, nextAvailable, source])
 
   useEffect(() => {
     const attempted = versionAttempted.current
@@ -820,7 +895,11 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
         <button className="cinema-button" onClick={() => subtitleRef.current?.click()} title={subtitle?.name}><Subtitles size={16} />{subtitle ? 'Replace subtitles' : 'Subtitles'}</button>
         <label>Speed<select aria-label="Playback speed" value={speed} onChange={(event) => { const value = Number(event.target.value); setSpeed(value); if (videoRef.current) videoRef.current.playbackRate = value }}>{[0.75, 1, 1.25, 1.5, 2].map((rate) => <option key={rate} value={rate}>{rate}×</option>)}</select></label>
         <button className="cinema-icon" aria-label="Restart current video" title="Restart" onClick={() => { if (videoRef.current) videoRef.current.currentTime = 0; setEnded(false); saveBookmark() }}><RotateCcw size={16} /></button>
-        <button className="cinema-text-button" onClick={clearSource}>Clear source</button>
+        <button className="cinema-text-button" onClick={() => {
+          // Only an explicit clear ends a float; source changes hand it to the next video.
+          if (videoRef.current && document.pictureInPictureElement === videoRef.current) void document.exitPictureInPicture().catch(() => {})
+          clearSource()
+        }}>Clear source</button>
         <label className="cinema-auto-mark"><input type="checkbox" checked={settings.autoMark} onChange={(event) => updateSettings({ autoMark: event.target.checked })} />Mark next unwatched episode after 90% playback</label>
       </div>}
       {error && !screenError && <p className="cinema-message cinema-error" role="alert">{error}</p>}
