@@ -39,186 +39,40 @@ import WatchCinema from './watch/WatchCinema'
 import type { WatchRequest } from './watch/watchState'
 import { firstEpisode } from './watch/watchState'
 import { scheduleEpisodePreparation, useWatchPreparation } from './watch/watchPreparation'
+import type {
+  AniListMedia,
+  AniListRecommendationNode,
+  AnimeEntry,
+  EntryPriority,
+  EpisodeInfo,
+  HistoryEvent,
+  HistoryEventType,
+  RecommendedAnime,
+  RewatchStatus,
+  SearchResult,
+  StoredState,
+  WatchStatus,
+} from './library/model'
+import { mapMedia, postAniList } from './library/anilist'
 
 const STORAGE_KEY = 'gptnime-tracker-library-v1'
 const RECOVERY_KEY_PREFIX = `${STORAGE_KEY}-recovery-`
 const MAX_RECOVERY_COPIES = 3
 const FOCUS_LAYOUT_KEY = 'gptnime-focus-layout-v1'
 const NOTIFICATION_PREFS_KEY = 'gptnime-notification-prefs-v1'
-const ANILIST_ENDPOINT = 'https://graphql.anilist.co'
 const JIKAN_ENDPOINT = 'https://api.jikan.moe/v4'
 const LIVE_SEARCH_DELAY_MS = 340
 const MIN_SEARCH_LENGTH = 2
 const JIKAN_PAGE_DELAY_MS = 360
 const SMART_RECOMMENDATION_DISPLAY_LIMIT = 4
 
-type WatchStatus = 'watching' | 'planning' | 'completed' | 'paused' | 'dropped'
-type RewatchStatus = 'none' | 'planned' | 'rewatching'
 type ViewName = 'dashboard' | 'library' | 'upcoming' | 'history'
 type SortMode = 'recent' | 'title' | 'rating' | 'progress'
 type LibraryFilter = WatchStatus | 'all' | 'rewatch' | 'rewatching'
-type EntryPriority = 'low' | 'normal' | 'high'
 type ImportMode = 'merge' | 'replace'
 type FocusLayout = 'cinematic' | 'compact'
 type CollectionBadgeId = 'franchise-master' | 'movie-night' | 'rewatch-pick' | 'high-priority' | 'left-hanging'
 type AmbientSeason = 'winter' | 'spring' | 'summer' | 'fall'
-
-type AiringInfo = {
-  episode: number
-  airingAt: number
-  timeUntilAiring?: number | null
-}
-
-type StaffCredit = {
-  id?: number
-  name: string
-  nativeName?: string
-  role?: string
-  image?: string
-  siteUrl?: string
-  occupations?: string[]
-}
-
-type CharacterCredit = {
-  id?: number
-  name: string
-  nativeName?: string
-  role?: string
-  image?: string
-  siteUrl?: string
-  voiceActor?: StaffCredit
-}
-
-type RelationInfo = {
-  anilistId: number
-  idMal?: number | null
-  title: string
-  relationType?: string | null
-  format?: string | null
-  releaseStatus?: string | null
-  episodesTotal?: number | null
-  seasonYear?: number | null
-  coverImage?: string
-}
-
-type ExternalLinkInfo = {
-  site: string
-  url: string
-  icon?: string | null
-  color?: string | null
-  type?: string | null
-}
-
-type TagInfo = {
-  name: string
-  rank?: number | null
-  isSpoiler?: boolean | null
-}
-
-type RankingInfo = {
-  rank: number
-  type?: string | null
-  season?: string | null
-  year?: number | null
-  allTime?: boolean | null
-  context?: string | null
-}
-
-type EpisodeInfo = {
-  number: number
-  title: string
-  titleJapanese?: string
-  titleRomanji?: string
-  aired?: string | null
-  score?: number | null
-  filler?: boolean
-  recap?: boolean
-  url?: string
-}
-
-type SearchResult = {
-  anilistId: number
-  idMal?: number | null
-  title: string
-  titleEnglish?: string
-  nativeTitle?: string
-  synonyms?: string[]
-  format?: string | null
-  releaseStatus?: string | null
-  episodesTotal?: number | null
-  duration?: number | null
-  description?: string
-  season?: string | null
-  seasonYear?: number | null
-  coverImage?: string
-  bannerImage?: string | null
-  color?: string | null
-  genres: string[]
-  tags?: TagInfo[]
-  averageScore?: number | null
-  meanScore?: number | null
-  popularity?: number | null
-  favourites?: number | null
-  source?: string | null
-  countryOfOrigin?: string | null
-  hashtag?: string | null
-  siteUrl?: string | null
-  trailer?: {
-    id?: string | null
-    site?: string | null
-    thumbnail?: string | null
-  } | null
-  studios: string[]
-  staff?: StaffCredit[]
-  characters?: CharacterCredit[]
-  relations?: RelationInfo[]
-  externalLinks?: ExternalLinkInfo[]
-  rankings?: RankingInfo[]
-  nextAiringEpisode?: AiringInfo | null
-}
-
-type AnimeEntry = SearchResult & {
-  id: string
-  status: WatchStatus
-  progress: number
-  rating: number | null
-  notes: string
-  episodeMemo?: string
-  addedAt: string
-  updatedAt: string
-  startedAt?: string
-  completedAt?: string
-  lastWatchedAt?: string
-  rewatchStatus?: RewatchStatus
-  rewatchPlannedAt?: string
-  rewatchStartedAt?: string
-  rewatchCount?: number
-  episodeList?: EpisodeInfo[]
-  episodeListLoaded?: boolean
-  episodeListError?: string
-  detailsLoaded?: boolean
-  detailsUpdatedAt?: string
-  favorite?: boolean
-  rewatchWorthy?: boolean
-  priority?: EntryPriority
-  droppedReason?: string
-}
-
-type HistoryEventType = 'added' | 'progress' | 'rating' | 'status' | 'note' | 'removed' | 'import' | 'refresh' | 'rewatch' | 'label'
-
-type HistoryEvent = {
-  id: string
-  animeId?: string
-  animeTitle: string
-  type: HistoryEventType
-  message: string
-  at: string
-}
-
-type StoredState = {
-  library: AnimeEntry[]
-  history: HistoryEvent[]
-}
 
 type StorageRecovery = {
   key: string | null
@@ -278,11 +132,6 @@ type CollectionBadge = {
   icon: typeof LibraryBig
 }
 
-type RecommendedAnime = SearchResult & {
-  recommendationScore: number
-  recommendedFrom: string[]
-}
-
 type WatchNotification = {
   id: string
   kind: 'stale' | 'upcoming'
@@ -321,92 +170,6 @@ type FanStats = {
 type EndCardSnapshot = {
   entry: AnimeEntry
   completedAt: string
-}
-
-type AniListMedia = {
-  id: number
-  idMal?: number | null
-  isAdult?: boolean | null
-  siteUrl?: string | null
-  title?: {
-    romaji?: string | null
-    english?: string | null
-    native?: string | null
-  }
-  format?: string | null
-  status?: string | null
-  episodes?: number | null
-  duration?: number | null
-  description?: string | null
-  synonyms?: string[] | null
-  season?: string | null
-  seasonYear?: number | null
-  coverImage?: {
-    extraLarge?: string | null
-    large?: string | null
-    color?: string | null
-  } | null
-  bannerImage?: string | null
-  genres?: string[] | null
-  tags?: Array<{ name?: string | null; rank?: number | null; isMediaSpoiler?: boolean | null }> | null
-  averageScore?: number | null
-  meanScore?: number | null
-  popularity?: number | null
-  favourites?: number | null
-  source?: string | null
-  countryOfOrigin?: string | null
-  hashtag?: string | null
-  trailer?: {
-    id?: string | null
-    site?: string | null
-    thumbnail?: string | null
-  } | null
-  nextAiringEpisode?: AiringInfo | null
-  studios?: {
-    nodes?: Array<{ id?: number | null; name?: string | null; siteUrl?: string | null }> | null
-  } | null
-  staff?: {
-    edges?: Array<{
-      role?: string | null
-      node?: {
-        id?: number | null
-        name?: { full?: string | null; native?: string | null } | null
-        image?: { large?: string | null } | null
-        siteUrl?: string | null
-        primaryOccupations?: string[] | null
-      } | null
-    }> | null
-  } | null
-  characters?: {
-    edges?: Array<{
-      role?: string | null
-      node?: {
-        id?: number | null
-        name?: { full?: string | null; native?: string | null } | null
-        image?: { large?: string | null } | null
-        siteUrl?: string | null
-      } | null
-      voiceActors?: Array<{
-        id?: number | null
-        name?: { full?: string | null; native?: string | null } | null
-        image?: { large?: string | null } | null
-        siteUrl?: string | null
-      }> | null
-    }> | null
-  } | null
-  relations?: {
-    edges?: Array<{
-      relationType?: string | null
-      node?: AniListMedia | null
-    }> | null
-  } | null
-  externalLinks?: Array<ExternalLinkInfo | null> | null
-  rankings?: Array<RankingInfo | null> | null
-}
-
-type AniListRecommendationNode = {
-  rating?: number | null
-  mediaRecommendation?: AniListMedia | null
 }
 
 type JikanEpisode = {
@@ -1001,158 +764,6 @@ function createId() {
   }
 
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-function cleanText(value?: string | null) {
-  if (!value) return ''
-
-  return value
-    .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/<\/?[^>]+(>|$)/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function mapMedia(media: AniListMedia): SearchResult {
-  const staff =
-    media.staff?.edges
-      ?.map((edge) => {
-        const node = edge.node
-        const name = node?.name?.full
-        if (!name) return null
-
-        return {
-          id: node.id || undefined,
-          name,
-          nativeName: node.name?.native || undefined,
-          role: edge.role || undefined,
-          image: node.image?.large || undefined,
-          siteUrl: node.siteUrl || undefined,
-          occupations: node.primaryOccupations || undefined,
-        }
-      })
-      .filter(Boolean) as StaffCredit[] | undefined
-
-  const characters =
-    media.characters?.edges
-      ?.map((edge) => {
-        const node = edge.node
-        const name = node?.name?.full
-        if (!name) return null
-
-        const voiceActorNode = edge.voiceActors?.[0]
-
-        return {
-          id: node.id || undefined,
-          name,
-          nativeName: node.name?.native || undefined,
-          role: edge.role || undefined,
-          image: node.image?.large || undefined,
-          siteUrl: node.siteUrl || undefined,
-          voiceActor: voiceActorNode?.name?.full
-            ? {
-                id: voiceActorNode.id || undefined,
-                name: voiceActorNode.name.full,
-                nativeName: voiceActorNode.name.native || undefined,
-                image: voiceActorNode.image?.large || undefined,
-                siteUrl: voiceActorNode.siteUrl || undefined,
-              }
-            : undefined,
-        }
-      })
-      .filter(Boolean) as CharacterCredit[] | undefined
-
-  const relations =
-    media.relations?.edges
-      ?.map((edge) => {
-        const node = edge.node
-        if (!node?.id) return null
-
-        return {
-          anilistId: node.id,
-          idMal: node.idMal,
-          title: node.title?.english || node.title?.romaji || 'Untitled anime',
-          relationType: edge.relationType,
-          format: node.format,
-          releaseStatus: node.status,
-          episodesTotal: node.episodes,
-          seasonYear: node.seasonYear,
-          coverImage: node.coverImage?.large || node.coverImage?.extraLarge || undefined,
-        }
-      })
-      .filter(Boolean) as RelationInfo[] | undefined
-
-  return {
-    anilistId: media.id,
-    idMal: media.idMal,
-    title: media.title?.english || media.title?.romaji || 'Untitled anime',
-    titleEnglish: media.title?.english || undefined,
-    nativeTitle: media.title?.native || undefined,
-    synonyms: [...new Set([media.title?.romaji, ...(media.synonyms || [])].filter((title): title is string => !!title))],
-    format: media.format,
-    releaseStatus: media.status,
-    episodesTotal: media.episodes,
-    duration: media.duration,
-    description: cleanText(media.description),
-    season: media.season,
-    seasonYear: media.seasonYear,
-    coverImage: media.coverImage?.extraLarge || media.coverImage?.large || undefined,
-    bannerImage: media.bannerImage,
-    color: media.coverImage?.color,
-    genres: media.genres || [],
-    tags:
-      media.tags
-        ?.filter((tag) => tag.name && !tag.isMediaSpoiler)
-        .map((tag) => ({
-          name: tag.name as string,
-          rank: tag.rank,
-          isSpoiler: tag.isMediaSpoiler,
-        })) || [],
-    averageScore: media.averageScore,
-    meanScore: media.meanScore,
-    popularity: media.popularity,
-    favourites: media.favourites,
-    source: media.source,
-    countryOfOrigin: media.countryOfOrigin,
-    hashtag: media.hashtag,
-    siteUrl: media.siteUrl,
-    trailer: media.trailer,
-    studios: media.studios?.nodes?.map((studio) => studio.name).filter(Boolean) as string[] || [],
-    staff,
-    characters,
-    relations,
-    externalLinks: media.externalLinks?.filter((link): link is ExternalLinkInfo => Boolean(link?.site && link.url)) || [],
-    rankings: media.rankings?.filter((ranking): ranking is RankingInfo => Boolean(ranking?.rank)) || [],
-    nextAiringEpisode: media.nextAiringEpisode,
-  }
-}
-
-async function postAniList<T>(query: string, variables: Record<string, unknown>, signal?: AbortSignal) {
-  const response = await fetch(ANILIST_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ query, variables }),
-    signal,
-  })
-
-  if (!response.ok) {
-    throw new Error(`AniList request failed: ${response.status}`)
-  }
-
-  const payload = (await response.json()) as { data?: T; errors?: Array<{ message?: string }> }
-
-  if (payload.errors?.length) {
-    throw new Error(payload.errors.map((error) => error.message).filter(Boolean).join(', '))
-  }
-
-  if (!payload.data) {
-    throw new Error('AniList returned an empty response')
-  }
-
-  return payload.data
 }
 
 async function searchAniList(term: string, signal?: AbortSignal) {
