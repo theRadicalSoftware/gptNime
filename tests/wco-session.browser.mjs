@@ -130,6 +130,7 @@ try {
   const result = await resolveWco(request, new AbortController().signal, session, checkpoints, () => {})
   assert.equal(result.kind, 'source')
   assert.equal(result.source, mediaUrl)
+  await session.settled()
   assert.equal(reopened.url(), 'about:blank')
   assert.equal(episodeLoads, 2)
   const getPage = session.getPage.bind(session)
@@ -161,6 +162,7 @@ try {
   await context.unrouteAll({ behavior: 'wait' })
   console.log('✓ Preparation never requests focus; access recovery reloads the episode with the accepted fixture session')
   await session.park(reopened)
+  await session.settled()
   assert.equal(reopened.url(), 'about:blank')
 
   // Movie search/access/player regression using fixtures, never a real account.
@@ -208,6 +210,7 @@ try {
   assert.equal(reopened.url(), 'https://www.wco.tv/movie-list')
   catalogueAccess = true
   assert.equal((await resolveWco(missing, new AbortController().signal, session, checkpoints, () => {})).pageUrl, gurrenUrl)
+  await session.settled()
   assert.equal(reopened.url(), 'about:blank')
   session.show = show
   console.log('✓ Movies resolve automatically, surface access gates promptly, retry with the saved session and never inherit TV episode neighbors')
@@ -278,6 +281,8 @@ try {
     assert.equal(episodePageLoads, 2, 'Try Again first, then one ordinary episode-page reload for a fresh player link')
     assert.ok(playerLoads[1] - playerLoads[0] >= 400 && playerLoads[2] - playerLoads[1] >= 560, 'Retries wait, and later waits grow')
     assert.ok(phases.includes('capacity'))
+    // Once WCO is full, the status stays on capacity until the source arrives.
+    assert.deepEqual(phases.slice(phases.indexOf('capacity')), phases.slice(phases.indexOf('capacity')).map(() => 'capacity'))
     console.log('✓ WCO full-capacity pages retry at a growing pace, alternating the provider’s Try Again with a fresh page load, until the episode plays')
 
     fullLoads = 0; capacityLimit = Infinity; playerLoads.length = 0; episodePageLoads = 0

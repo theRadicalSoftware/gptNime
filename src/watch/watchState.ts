@@ -27,6 +27,7 @@ type WatchState = {
   language: Language
   sourceTab: 'wco' | 'file' | 'url'
   autoMark: boolean
+  autoNext: boolean
   pages: Record<string, string>
   bookmarks: Record<string, Bookmark>
   lastWatch?: LastWatch
@@ -100,7 +101,7 @@ export function sourceFingerprint(value: string): string {
 }
 
 export function readWatchState(): WatchState {
-  const empty: WatchState = { language: 'sub', sourceTab: 'wco', autoMark: true, pages: {}, bookmarks: {} }
+  const empty: WatchState = { language: 'sub', sourceTab: 'wco', autoMark: true, autoNext: true, pages: {}, bookmarks: {} }
   try {
     const raw = JSON.parse(localStorage.getItem(WATCH_STORAGE_KEY) || 'null')
     if (!raw || typeof raw !== 'object') return empty
@@ -114,7 +115,7 @@ export function readWatchState(): WatchState {
     const last = raw.lastWatch
     const lastWatch: LastWatch | undefined = last && Number.isInteger(last.anilistId) && last.anilistId > 0 && Number.isInteger(last.episode) && last.episode > 0 && last.episode <= 100_000 && ['sub', 'dub'].includes(last.language) && Number.isFinite(last.updatedAt) && last.updatedAt <= Date.now() && typeof last.finished === 'boolean'
       ? { anilistId: last.anilistId, episode: last.episode, language: last.language, updatedAt: last.updatedAt, finished: last.finished } : undefined
-    return { language: raw.language === 'dub' ? 'dub' : 'sub', sourceTab: raw.sourceTab === 'file' || raw.sourceTab === 'url' ? raw.sourceTab : 'wco', autoMark: raw.autoMark !== false, pages, bookmarks, lastWatch }
+    return { language: raw.language === 'dub' ? 'dub' : 'sub', sourceTab: raw.sourceTab === 'file' || raw.sourceTab === 'url' ? raw.sourceTab : 'wco', autoMark: raw.autoMark !== false, autoNext: raw.autoNext !== false, pages, bookmarks, lastWatch }
   } catch { return empty }
 }
 

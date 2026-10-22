@@ -38,6 +38,7 @@ export class WcoBrowser {
   private visible = false
   private hiddenDisplay = false
   private switching: Promise<void> | null = null
+  private parking: Promise<void> | null = null
   revision = 0
 
   constructor(private executable: string, private profile = wcoProfileDirectory) {}
@@ -96,6 +97,7 @@ export class WcoBrowser {
 
   async getPage(): Promise<Page> {
     await this.switching
+    await this.parking
     return this.ensurePage()
   }
 
@@ -115,6 +117,7 @@ export class WcoBrowser {
   }
 
   async show(): Promise<boolean> {
+    await this.parking
     if (this.switching) { await this.switching; return true }
     if (!this.page || this.page.isClosed()) return false
     if (this.hiddenDisplay) {
@@ -142,13 +145,20 @@ export class WcoBrowser {
     this.preparing = preparing
   }
 
-  async park(page: Page) {
-    if (page.isClosed()) return
-    // Release provider media after handing it to the cinema, preserving cookies.
-    await page.goto('about:blank', { timeout: 5000 }).catch(() => {})
-    if (this.visible) { await this.stopBrowser(); this.visible = false }
-    else if (!this.hiddenDisplay) await this.windowState(page, 'minimized')
+  // Release provider media after handing it to the cinema, preserving cookies.
+  // The source is answered first; the next preparation waits for this cleanup.
+  park(page: Page): Promise<void> {
+    const parking = (async () => {
+      if (page.isClosed()) return
+      await page.goto('about:blank', { timeout: 5000 }).catch(() => {})
+      if (this.visible) { await this.stopBrowser(); this.visible = false }
+      else if (!this.hiddenDisplay) await this.windowState(page, 'minimized')
+    })().finally(() => { if (this.parking === parking) this.parking = null })
+    this.parking = parking
+    return parking
   }
+
+  async settled() { await this.parking }
 
   async cancel(page: Page) {
     if (page.isClosed()) return
@@ -178,6 +188,7 @@ export class WcoBrowser {
 
   private async shutdown() {
     this.closing = true
+    await this.parking?.catch(() => {})
     await this.switching?.catch(() => {})
     await this.stopBrowser()
   }

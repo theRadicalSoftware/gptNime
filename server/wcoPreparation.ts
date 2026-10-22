@@ -1,8 +1,8 @@
-import type { ProviderPhase } from './wco'
+import type { CapacityRetry, ProviderPhase } from './wco'
 
-type Work<T> = (signal: AbortSignal, report: (phase: ProviderPhase) => void) => Promise<T>
+type Work<T> = (signal: AbortSignal, report: (phase: ProviderPhase, retry?: CapacityRetry) => void) => Promise<T>
 type Job<T> = {
-  key: string; background: boolean; controller: AbortController; phase: ProviderPhase; requestId: string | null
+  key: string; background: boolean; controller: AbortController; phase: ProviderPhase; retry: CapacityRetry | null; requestId: string | null
   promise: Promise<T>; listeners: number; timer: ReturnType<typeof setTimeout>
 }
 export class PreparationBusy extends Error {}
@@ -14,7 +14,7 @@ export class WcoPreparation<T> {
   private closing = false
   get status() {
     const job = this.active
-    return { busy: !!job, prefetching: job?.background === true, phase: job?.phase || null, requestId: job?.requestId || null }
+    return { busy: !!job, prefetching: job?.background === true, phase: job?.phase || null, retry: job?.phase === 'capacity' ? job.retry : null, requestId: job?.requestId || null }
   }
 
   private deadline(job: Job<T>) {
@@ -27,11 +27,12 @@ export class WcoPreparation<T> {
   private start(key: string, work: Work<T>, background: boolean): Job<T> {
     if (this.closing) throw new Error('The WCO connector is shutting down.')
     const controller = new AbortController()
-    const job = { key, background, controller, phase: 'opening', requestId: null, listeners: 0 } as Job<T>
+    const job = { key, background, controller, phase: 'opening', retry: null, requestId: null, listeners: 0 } as Job<T>
     this.active = job
     this.deadline(job)
-    job.promise = Promise.resolve().then(() => work(controller.signal, (phase) => {
+    job.promise = Promise.resolve().then(() => work(controller.signal, (phase, retry) => {
       job.phase = phase
+      job.retry = retry || null
       // Speculation never waits on a human check or WCO capacity, and never shows
       // a provider window. A foreground click keeps verification and paced retry.
       if (job.background && (phase === 'verification' || phase === 'capacity')) controller.abort()

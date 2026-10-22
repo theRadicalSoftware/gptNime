@@ -348,6 +348,8 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const [preparing, setPreparing] = useState(false)
   const [preparationJob, setPreparationJob] = useState('')
   const [providerPhase, setProviderPhase] = useState('opening')
+  const [capacityRetry, setCapacityRetry] = useState<{ attempt: number; retryAt: number } | null>(null)
+  const [clock, setClock] = useState(() => Date.now())
   const [providerAttention, setProviderAttention] = useState(false)
   const [playbackPage, setPlaybackPage] = useState('')
   const [matches, setMatches] = useState<Match[]>([])
@@ -360,6 +362,8 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const providerBrowserRef = useRef<'chrome' | 'brave'>('chrome')
   const [speed, setSpeed] = useState(1)
   const [ended, setEnded] = useState(false)
+  // Seconds until the next episode starts by itself after this one ends.
+  const [upNext, setUpNext] = useState<number | null>(null)
   const [duration, setDuration] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -396,6 +400,16 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const alternateId = source?.provider === 'wco' ? versionLeases[alternateLanguage] : undefined
   const onEpisodeRef = useRef(onEpisode)
   onEpisodeRef.current = onEpisode
+
+  // Wherever the player is (page, dock, pop-out or floating video), a finished
+  // WCO episode counts down and continues into the next one. The next episode
+  // is usually prepared during the final minute, so it starts at once.
+  useEffect(() => {
+    if (upNext === null) return
+    if (upNext <= 0) { setUpNext(null); onEpisodeRef.current(episode + 1); return }
+    const timer = window.setTimeout(() => setUpNext((seconds) => seconds === null ? null : seconds - 1), 1000)
+    return () => window.clearTimeout(timer)
+  }, [upNext, episode])
 
   // Title, artwork and buttons for the browser's floating video window and
   // media keys. Previous/Next change episodes like the cinema's own arrows.
@@ -484,6 +498,14 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     return () => { controller.abort(); resolutionRef.current?.abort() }
   }, [])
 
+  const retryAt = capacityRetry?.retryAt || 0
+  useEffect(() => {
+    if (!retryAt) return
+    setClock(Date.now())
+    const timer = window.setInterval(() => setClock(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [retryAt])
+
   useEffect(() => {
     if (!preparing || !preparationJob) return
     const controller = new AbortController()
@@ -492,7 +514,11 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
       try {
         const response = await fetch('/api/wco/status', { signal: controller.signal, headers: { 'X-WCO-Browser': providerBrowserRef.current } })
         const status = await response.json()
-        if (!controller.signal.aborted && status.requestId === preparationJob && typeof status.phase === 'string') setProviderPhase(status.phase)
+        if (!controller.signal.aborted && status.requestId === preparationJob && typeof status.phase === 'string') {
+          setProviderPhase(status.phase)
+          const retry = status.retry
+          setCapacityRetry(retry && Number.isInteger(retry.attempt) && Number.isFinite(retry.retryAt) ? { attempt: retry.attempt, retryAt: retry.retryAt } : null)
+        }
       } catch { /* Preparation reports any terminal error through its own request. */ }
       if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), 1000)
     }
@@ -616,7 +642,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
     resolutionRef.current = controller
     const requestId = crypto.randomUUID()
     setPreparationJob(requestId); setProviderPhase('opening')
-    setPreparing(true); setAhead(null); setError(''); setNotice(''); setMatches([]); setProviderAttention(false)
+    setPreparing(true); setCapacityRetry(null); setAhead(null); setError(''); setNotice(''); setMatches([]); setProviderAttention(false)
     videoRef.current?.pause()
     try {
       // Give a cancelled preparation time to release its work tab.
@@ -795,7 +821,10 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
             if (video && source.autoplay && !autoplayAttempted.current && !video.dataset.cinemaMoving) {
               startVideo(video)
             }
-          }} onWaiting={() => setLoading(true)} onPlaying={() => { setPlaying(true); setLoading(false); setMediaError(''); setEnded(false) }} onTimeUpdate={handleTime} onPause={() => { setPlaying(false); saveBookmark() }} onEnded={() => { handleTime(); saveBookmark(); setEnded(true) }} onError={handleMediaError}>
+          }} onWaiting={() => setLoading(true)} onPlaying={() => { setPlaying(true); setLoading(false); setMediaError(''); setEnded(false); setUpNext(null) }} onTimeUpdate={handleTime} onPause={() => { setPlaying(false); saveBookmark() }} onEnded={() => {
+            handleTime(); saveBookmark(); setEnded(true)
+            if (settings.autoNext && source.provider === 'wco' && tab === 'wco' && nextAvailable) setUpNext(5)
+          }} onError={handleMediaError}>
           {subtitle && <track key={subtitle.url} src={subtitle.url} kind="subtitles" srcLang="en" label={subtitle.name} default onError={() => setError('These subtitles could not be loaded. Choose a valid WebVTT (.vtt) file.')} />}
         </video>
         {loading && !mediaError && <span className="cinema-loading" role="status">Loading video…</span>}
@@ -838,7 +867,10 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
       <button className="cinema-text-button" onClick={onDetails}>Title details<ExternalLink size={12} /></button>
     </aside>}
     {!preparing && tab === 'wco' && ahead?.key === aheadKey && <div className="cinema-ahead" role="status">{ahead.expiresAt ? <Check size={12} /> : <LoaderCircle size={12} className="cinema-version-spinner" />}<span>{ahead.expiresAt ? movie ? 'Movie prepared' : `Episode ${ahead.episode} prepared` : movie ? 'Getting your movie ready in the background…' : `Getting episode ${ahead.episode} ready in the background…`}</span></div>}
-    {ended && <div className="cinema-finished" role="status"><span><Check size={17} />{nextAvailable ? 'Ready for the next episode?' : 'That’s a wrap. Thanks for watching.'}</span>{nextAvailable && <button className="cinema-button primary" onClick={() => onEpisode(episode + 1)}>Episode {episode + 1}<ChevronRight size={16} /></button>}</div>}
+    {ended && <div className={`cinema-finished${upNext !== null ? ' is-counting' : ''}`} role="status"><span><Check size={17} />{upNext !== null ? `Episode ${episode + 1} starts in ${upNext}…` : nextAvailable ? 'Ready for the next episode?' : 'That’s a wrap. Thanks for watching.'}</span>{nextAvailable && <span className="cinema-finished-actions">
+      {upNext !== null && <button className="cinema-button" onClick={() => setUpNext(null)}>Cancel</button>}
+      <button className="cinema-button primary" onClick={() => { setUpNext(null); onEpisode(episode + 1) }}>{upNext !== null ? 'Play now' : `Episode ${episode + 1}`}<ChevronRight size={16} /></button>
+    </span>}</div>}
     <div className="cinema-source-desk">
       <div className="cinema-source-heading"><span className="eyebrow">Watch your way</span><span>Choose a source</span></div>
       <div className="cinema-source-tabs" role="group" aria-label="Video source">
@@ -854,7 +886,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
             <button className="cinema-text-button" disabled={preparing} onClick={() => void prepareEpisode({ search: true, choose: true })}><Search size={14} />Find another match</button>
           </div>
           {preparing && <div className={`cinema-preparation${providerPhase === 'verification' ? ' needs-verification' : ''}`} role="status">
-            <p>{providerPhase === 'verification' ? 'WCO needs verification. Use Show WCO window to complete the check; playback continues here when WCO accepts it.' : providerPhase === 'capacity' ? `WCO’s free servers are full right now. GPTNime is retrying automatically at a relaxed pace and will start your ${itemLabel} as soon as WCO sends it. Cancel any time.` : providerPhase === 'searching' ? `Finding ${movie ? 'your movie' : `episode ${episode}`} on WCO…` : providerPhase === 'opening' ? hiddenPreparation ? 'Starting quietly in the background…' : 'Opening your WCO session…' : 'Preparing your video…'}</p>
+            <p>{providerPhase === 'verification' ? 'WCO needs verification. Use Show WCO window to complete the check; playback continues here when WCO accepts it.' : providerPhase === 'capacity' ? `WCO’s free servers are full right now. GPTNime is retrying automatically at a relaxed pace and will start your ${itemLabel} as soon as WCO sends it. Cancel any time.${capacityRetry ? ` Attempt ${capacityRetry.attempt}${capacityRetry.retryAt > clock ? ` · next try in ${Math.ceil((capacityRetry.retryAt - clock) / 1000)} s` : ' · trying now'}.` : ''}` : providerPhase === 'searching' ? `Finding ${movie ? 'your movie' : `episode ${episode}`} on WCO…` : providerPhase === 'opening' ? hiddenPreparation ? 'Starting quietly in the background…' : 'Opening your WCO session…' : 'Preparing your video…'}</p>
             <button className="cinema-button" onClick={() => void showProvider()}><ExternalLink size={14} />Show WCO window</button>
             {providerPhase === 'verification' && <small>Your WCO session stays open. If the check keeps returning after you click it, WCO has not accepted verification yet.</small>}
           </div>}
@@ -901,6 +933,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
           clearSource()
         }}>Clear source</button>
         <label className="cinema-auto-mark"><input type="checkbox" checked={settings.autoMark} onChange={(event) => updateSettings({ autoMark: event.target.checked })} />Mark next unwatched episode after 90% playback</label>
+        <label className="cinema-auto-mark"><input type="checkbox" checked={settings.autoNext} onChange={(event) => { updateSettings({ autoNext: event.target.checked }); if (!event.target.checked) setUpNext(null) }} />Play the next episode automatically</label>
       </div>}
       {error && !screenError && <p className="cinema-message cinema-error" role="alert">{error}</p>}
       {error && !screenError && providerAttention && tab === 'wco' && <button className="cinema-button" onClick={() => void showProvider()}><ExternalLink size={14} />Open WCO session</button>}

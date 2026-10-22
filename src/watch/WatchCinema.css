@@ -119,6 +119,7 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-loading { position: absolute; top: 14px; left: 14px; border-radius: 5px; background: #000c; padding: 8px 12px; font-size: 11px; pointer-events: none; }
 .cinema-finished { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px; margin-bottom: 15px; border: 1px solid #438e8140; border-radius: 9px; background: #438e8110; font-size: 11px; color: #b8d3cb; }
 .cinema-finished > span { display: flex; gap: 8px; align-items: center; }
+.cinema-finished-actions { flex-shrink: 0; }
 .cinema-official { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-top: 16px; margin-top: 16px; border-top: 1px solid #ffffff0c; font-size: 9px; }
 .cinema-official > span { color: #91999d; }
 .cinema-official a { display: inline-flex; align-items: center; gap: 5px; color: #c8c9c2; text-decoration: none; }
@@ -190,6 +191,9 @@ body.cinema-modal-open { overflow: hidden !important; }
 .cinema-mini-info dt { color: #909a9c; }
 .cinema-mini-info dd { margin: 0; color: #c5c9c5; overflow-wrap: anywhere; }
 .cinema-mini-info .cinema-text-button { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; }
+/* The dock hides the finished card, except a next-episode countdown that can be cancelled. */
+.cinema-layout-dock .cinema-finished.is-counting { display: flex; margin: 0 10px 8px; padding: 7px 9px; font-size: 10px; }
+.cinema-layout-dock .cinema-finished.is-counting .cinema-button { min-height: 28px; padding: 5px 9px; font-size: 10px; }
 .cinema-layout-dock .cinema-ahead { padding: 1px 12px 9px; font-size: 9px; }
 @media (max-width: 359px) {
   .cinema-layout-dock .cinema-episode-navigation .cinema-episode-total { display: none; }

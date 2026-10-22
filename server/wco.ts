@@ -23,7 +23,8 @@ export function capacityRetryDelay(attempt: number, random = Math.random) {
   const base = Math.min(capacityRetry.maxMs, capacityRetry.firstMs * capacityRetry.growth ** attempt)
   return Math.round(base * (1 - capacityRetry.jitter + random() * capacityRetry.jitter * 2))
 }
-type ReportPhase = (phase: ProviderPhase) => void
+export type CapacityRetry = { attempt: number; retryAt: number }
+type ReportPhase = (phase: ProviderPhase, retry?: CapacityRetry) => void
 type ResumePoint = { pageUrl: string; language: 'sub' | 'dub'; notice: string; seriesPage?: string; reload?: boolean }
 class PlaybackError extends Error {
   constructor(message: string, readonly code?: 'verification' | 'access') { super(message) }
@@ -244,10 +245,13 @@ export class PreparationBudget {
 }
 
 // Pause before pressing WCO's Try Again, ending early if the person cancels.
+// The phase stays 'capacity' through the retry itself (including WCO's
+// announcement countdown after a reload), so the cinema does not flicker
+// between waiting and preparing; only the next-attempt time changes.
 async function waitForCapacity(page: Page, budget: PreparationBudget, signal: AbortSignal, report: ReportPhase, message: string) {
   const pause = capacityRetryDelay(budget.capacityAttempts++)
   if (pause > budget.capacityRemaining) throw new PlaybackError(`${message} GPTNime retried automatically for ${Math.round(capacityRetry.allowanceMs / 60_000)} minutes.`, 'access')
-  report('capacity')
+  report('capacity', { attempt: budget.capacityAttempts, retryAt: Date.now() + pause })
   const started = Date.now()
   try {
     while (Date.now() - started < pause) {
@@ -258,7 +262,7 @@ async function waitForCapacity(page: Page, budget: PreparationBudget, signal: Ab
   } finally {
     budget.accountCapacity(Date.now() - started)
   }
-  report('preparing')
+  report('capacity', { attempt: budget.capacityAttempts, retryAt: 0 })
 }
 
 export async function waitForProvider(page: Page, budget: PreparationBudget, signal: AbortSignal, report: ReportPhase, resume: ProviderPhase) {
@@ -537,7 +541,7 @@ async function prepareWco(request: ResolveRequest, signal: AbortSignal, session:
           const links = request.movie ? [] : await episodeLinks(page, false)
           const previous = matchingEpisodes(links, request.episode - 1, language)
           const next = matchingEpisodes(links, request.episode + 1, language)
-          await session.park(page)
+          void session.park(page)
           return {
             kind: 'source', source: media.source, pageUrl: selectedPage, seriesPage, title, language, notice: languageNotice,
             previousPage: previous.length === 1 ? previous[0] : null,

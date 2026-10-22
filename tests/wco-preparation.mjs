@@ -14,7 +14,7 @@ const task = () => {
       input.throwIfAborted()
     })
   }
-  return { work, finish: value => finish(value), report: phase => report(phase), get starts() { return starts }, get stops() { return stops }, get aborted() { return signal?.aborted } }
+  return { work, finish: value => finish(value), report: (phase, retry) => report(phase, retry), get starts() { return starts }, get stops() { return stops }, get aborted() { return signal?.aborted } }
 }
 const tick = () => new Promise(resolve => setImmediate(resolve))
 try {
@@ -84,9 +84,10 @@ try {
   assert.equal(queue.status.busy, false)
   const waiting = task()
   const viewer = queue.resolve('brave:waiting:sub', waiting.work, new AbortController().signal, 'viewer')
-  await tick(); waiting.report('capacity')
+  await tick(); waiting.report('capacity', { attempt: 2, retryAt: 12345 })
   assert.equal(waiting.aborted, false, 'A waiting viewer keeps its paced capacity retry')
   assert.equal(queue.status.phase, 'capacity')
+  assert.deepEqual(queue.status.retry, { attempt: 2, retryAt: 12345 })
   waiting.finish('ready')
   assert.equal(await viewer, 'ready')
   console.log('✓ Background work never waits on WCO capacity; a waiting viewer keeps retrying and reports it')
