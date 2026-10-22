@@ -6,7 +6,7 @@ import { createServer } from 'vite'
 // A stream that freezes partway through: the fixture answers the first part of
 // the video, then holds the rest of the download open without a byte, the way
 // a dropped tunnel or a stuck CDN connection looks to the browser.
-const port = Number(process.env.RECOVERY_TEST_PORT) || 5195
+const port = Number(process.env.RECOVERY_TEST_PORT) || 5193
 const base = `http://127.0.0.1:${port}`
 const cut = 150_000
 const tail = 560_000
