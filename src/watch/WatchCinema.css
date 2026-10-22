@@ -195,6 +195,11 @@ body.cinema-modal-open { overflow: hidden !important; }
   .cinema-layout-dock .cinema-now-playing em { font-size: 8px; }
 }
 .cinema-window-body { margin: 0; background: #111316; min-width: 0; }
+.cinema-overlay.cinema-layout-float { inset: 0; width: 100%; }
+.cinema-layout-float .watch-cinema { height: 100dvh; max-height: 100dvh; border: 0; border-radius: 0; box-shadow: none; }
+.cinema-layout-float .cinema-workspace { flex: 1; display: flex; flex-direction: column; }
+.cinema-layout-float .cinema-main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.cinema-layout-float .cinema-screen { flex: 1 1 auto; aspect-ratio: auto; min-height: 120px; }
 .cinema-layout-window { padding: 0; background: #111316; }
 .cinema-layout-window .watch-cinema { width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; border: 0; }
 .cinema-layout-window .cinema-workspace { flex: 1; }
