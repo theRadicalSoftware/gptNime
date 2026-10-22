@@ -40,6 +40,7 @@ export class WcoBrowser {
   private switching: Promise<void> | null = null
   private parking: Promise<void> | null = null
   revision = 0
+  userAgent = ''
 
   constructor(private executable: string, private profile = wcoProfileDirectory) {}
 

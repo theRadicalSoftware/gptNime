@@ -10,6 +10,15 @@ LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/gptnime"
 LOG_FILE="$LOG_DIR/gptnime-dev.log"
 PID_FILE="$LOG_DIR/gptnime-dev.pid"
 ICON_PATH="$PROJECT_DIR/public/brand/gptnime-launcher-icon.png"
+# The home copy and its 30 daily backups live here, readable only by this account.
+export GPTNIME_LIBRARY_DIR="${GPTNIME_LIBRARY_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/gptnime/library}"
+
+# GPTNime only listens on this computer. A phone reaches it through an SSH
+# tunnel over Tailscale (docs/PHONE.md), never through a network address.
+case "$HOST" in
+  127.0.0.1|localhost|::1) ;;
+  *) echo "GPTNime only runs on 127.0.0.1; use an SSH tunnel to reach it from another device." >&2; exit 1 ;;
+esac
 
 notify_user() {
   if command -v notify-send >/dev/null 2>&1; then

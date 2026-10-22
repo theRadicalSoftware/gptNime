@@ -27,7 +27,10 @@ import {
   Plus,
   RefreshCcw,
   Search,
+  ShieldAlert,
+  ShieldCheck,
   Sparkles,
+  Sprout,
   Star,
   Trash2,
   Upload,
@@ -54,6 +57,13 @@ import type {
   WatchStatus,
 } from './library/model'
 import { mapMedia, postAniList } from './library/anilist'
+import { readBackup, useHomeCopy, type BackupInfo } from './library/homeCopy'
+import LibraryVault from './library/LibraryVault'
+import type { ImportPlan } from './library/listImport'
+import type { RelationInfo } from './library/model'
+import SeasonView from './library/SeasonView'
+import { storyAfter, type StoryStep } from './library/story'
+import StoryNext from './library/StoryNext'
 
 const STORAGE_KEY = 'gptnime-tracker-library-v1'
 const RECOVERY_KEY_PREFIX = `${STORAGE_KEY}-recovery-`
@@ -66,7 +76,7 @@ const MIN_SEARCH_LENGTH = 2
 const JIKAN_PAGE_DELAY_MS = 360
 const SMART_RECOMMENDATION_DISPLAY_LIMIT = 4
 
-type ViewName = 'dashboard' | 'library' | 'upcoming' | 'history'
+type ViewName = 'dashboard' | 'library' | 'season' | 'upcoming' | 'history'
 type SortMode = 'recent' | 'title' | 'rating' | 'progress'
 type LibraryFilter = WatchStatus | 'all' | 'rewatch' | 'rewatching'
 type ImportMode = 'merge' | 'replace'
@@ -1779,6 +1789,7 @@ function App() {
   const [lastProgressChange, setLastProgressChange] = useState<ProgressUndoSnapshot | null>(null)
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
   const [importMode, setImportMode] = useState<ImportMode>('merge')
+  const [vaultOpen, setVaultOpen] = useState(false)
   const [sageMode, setSageMode] = useState(() => readStorage(SAGE_MODE_KEY) === 'on')
   const [storageRecovery, setStorageRecovery] = useState<StorageRecovery | null>(initialState.recovery)
   const [saveBlocked, setSaveBlocked] = useState(initialState.saveBlocked)
@@ -1804,6 +1815,14 @@ function App() {
     if (saveBlocked) return
     setSaveFailed(!writeStorage(STORAGE_KEY, JSON.stringify({ library, history })))
   }, [library, history, saveBlocked, saveAttempt])
+
+  // The same ledger on this computer, for a cleared browser, another browser or the phone.
+  const storedState = useMemo(() => ({ library, history }), [library, history])
+  const applyHomeCopy = useCallback((state: StoredState) => {
+    setLibrary(state.library)
+    setHistory(state.history)
+  }, [])
+  const homeCopy = useHomeCopy(storedState, applyHomeCopy, saveBlocked, normalizeStoredState)
 
   useEffect(() => {
     writeStorage(NOTIFICATION_PREFS_KEY, JSON.stringify(notificationPreferences))
@@ -2288,7 +2307,7 @@ function App() {
 
   const completedProgressFor = (result: SearchResult) => result.episodesTotal || 0
 
-  const addFromSearch = (result: SearchResult, status: WatchStatus = 'planning', rewatchStatus: RewatchStatus = 'none') => {
+  const addFromSearch = (result: SearchResult, status: WatchStatus = 'planning', rewatchStatus: RewatchStatus = 'none', stay = false): AnimeEntry => {
     const existing = library.find((entry) => entry.anilistId === result.anilistId)
     if (existing) {
       if (status === 'completed') {
@@ -2297,9 +2316,11 @@ function App() {
       if (rewatchStatus !== 'none') {
         setRewatchStatus(existing, rewatchStatus)
       }
-      setSelectedId(existing.id)
-      setView('library')
-      return
+      if (!stay) {
+        setSelectedId(existing.id)
+        setView('library')
+      }
+      return existing
     }
 
     const now = new Date().toISOString()
@@ -2322,9 +2343,11 @@ function App() {
       rewatchCount: rewatchStatus === 'rewatching' ? 1 : 0,
     }
 
-    setLibrary((current) => [entry, ...current])
-    setSelectedId(entry.id)
-    setView('library')
+    setLibrary((current) => current.some((item) => item.anilistId === entry.anilistId) ? current : [entry, ...current])
+    if (!stay) {
+      setSelectedId(entry.id)
+      setView('library')
+    }
     addHistory({
       animeId: entry.id,
       animeTitle: entry.title,
@@ -2336,6 +2359,69 @@ function App() {
             ? 'Marked as already watched'
             : `Added to ${statusMeta[status].label}`,
     })
+    return entry
+  }
+
+  // After a finale: open the sequel (or the movie or OVA before it), adding it
+  // to Watching first if it is new. A sequel that has not aired goes to Planning.
+  const libraryRef = useRef(library)
+  libraryRef.current = library
+  const storyActions = useRef<{ start?: (fromId: string, relation: RelationInfo, plan: boolean) => Promise<void> }>({})
+  storyActions.current.start = async (fromId, relation, plan) => {
+    const from = libraryRef.current.find((entry) => entry.id === fromId)
+    const tracked = libraryRef.current.find((entry) => entry.anilistId === relation.anilistId)
+    if (tracked) {
+      if (plan) return
+      if (tracked.status === 'planning' || tracked.status === 'paused') {
+        updateEntry(tracked.id, { status: 'watching', startedAt: tracked.startedAt || new Date().toISOString() }, {
+          animeId: tracked.id, animeTitle: tracked.title, type: 'status', message: `Moved to Watching after ${from?.title || 'the previous season'}`,
+        })
+      }
+      openWatch(tracked)
+      return
+    }
+    const media = await fetchAniListById(relation.anilistId)
+    const entry = addFromSearch(media, plan ? 'planning' : 'watching', 'none', true)
+    if (!plan) openWatch(entry)
+  }
+  const story = useMemo(() => ({
+    find: (id: string): Promise<StoryStep | null> => {
+      const entry = libraryRef.current.find((item) => item.id === id)
+      return entry ? storyAfter(entry, fetchAniListById) : Promise.resolve(null)
+    },
+    progress: (anilistId: number) => {
+      const entry = libraryRef.current.find((item) => item.anilistId === anilistId)
+      return entry ? { status: entry.status, progress: entry.progress, episodesTotal: entry.episodesTotal } : undefined
+    },
+    start: async (fromId: string, relation: RelationInfo, plan: boolean) => storyActions.current.start?.(fromId, relation, plan),
+  }), [])
+
+  const applyListImport = (plan: ImportPlan) => {
+    if (homeCopy.mode === 'local') downloadStateSnapshot(library, history, 'gptnime-backup-before-import')
+    const patches = new Map(plan.updated.map(({ entry, patch }) => [entry.id, patch]))
+    const now = new Date().toISOString()
+    setLibrary((current) => {
+      const tracked = new Set(current.map((entry) => entry.anilistId))
+      return [
+        ...plan.added.filter((entry) => !tracked.has(entry.anilistId)),
+        ...current.map((entry) => patches.has(entry.id) ? { ...entry, ...patches.get(entry.id), updatedAt: now } : entry),
+      ]
+    })
+    addHistory({
+      animeTitle: 'Library import',
+      type: 'import',
+      message: `Imported ${plan.added.length} title${plan.added.length === 1 ? '' : 's'} from ${plan.source}${plan.updated.length ? ` and moved ${plan.updated.length} forward` : ''}`,
+    })
+    setVaultOpen(false)
+    setStatusFilter('all')
+    setView('library')
+  }
+
+  const restoreBackup = async (backup: BackupInfo) => {
+    const text = await readBackup(backup.date)
+    setImportPreview(parseImportPreview(text, `Backup from ${new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date(`${backup.date}T12:00:00`))}`))
+    setImportMode('replace')
+    setVaultOpen(false)
   }
 
   function markWatched(entry: AnimeEntry) {
@@ -2721,6 +2807,7 @@ function App() {
   const navigation = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: Flame },
     { id: 'library' as const, label: 'Library', icon: LibraryBig },
+    { id: 'season' as const, label: 'This season', icon: Sprout },
     { id: 'upcoming' as const, label: 'Upcoming', icon: Clock3 },
     { id: 'history' as const, label: 'History', icon: History },
   ]
@@ -2776,6 +2863,9 @@ function App() {
                 key={item.id}
                 className={view === item.id ? 'nav-button nav-button-active' : 'nav-button'}
                 type="button"
+                aria-label={item.label}
+                title={item.label}
+                aria-current={view === item.id ? 'page' : undefined}
                 onClick={() => setView(item.id)}
               >
                 <Icon size={18} />
@@ -2790,6 +2880,15 @@ function App() {
           <Metric label="Episodes" value={stats.episodesWatched.toString()} />
           <Metric label="Avg score" value={stats.averageRating ? stats.averageRating.toFixed(1) : '-'} />
         </div>
+        <button
+          className={`home-copy-pill${homeCopy.mode === 'saved' || homeCopy.mode === 'saving' ? ' is-protected' : homeCopy.mode === 'checking' ? '' : ' is-warning'}`}
+          type="button"
+          title="Library and backups"
+          onClick={() => setVaultOpen(true)}
+        >
+          {homeCopy.mode === 'saved' || homeCopy.mode === 'saving' || homeCopy.mode === 'checking' ? <ShieldCheck size={15} /> : <ShieldAlert size={15} />}
+          <span>{homeCopy.mode === 'saved' ? 'Saved on this computer' : homeCopy.mode === 'saving' ? 'Saving…' : homeCopy.mode === 'offline' ? 'Computer copy out of reach' : homeCopy.mode === 'local' ? 'Saved in this browser' : 'Library and backups'}</span>
+        </button>
       </aside>
 
       <main className="main-stage">
@@ -2839,6 +2938,9 @@ function App() {
             </button>
             <button className="icon-button" type="button" title="Import library" onClick={() => importInputRef.current?.click()}>
               <Upload size={18} />
+            </button>
+            <button className="icon-button" type="button" title="Library, backups and MyAnimeList / AniList import" aria-label="Library and backups" onClick={() => setVaultOpen(true)}>
+              {homeCopy.mode === 'offline' || homeCopy.mode === 'local' ? <ShieldAlert size={18} /> : <ShieldCheck size={18} />}
             </button>
             <input
               ref={importInputRef}
@@ -3027,6 +3129,28 @@ function App() {
             </motion.section>
           )}
 
+          {view === 'season' && (
+            <motion.section
+              key="season"
+              className="view-stack"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -12 }}
+            >
+              <SeasonView
+                library={library}
+                signalFor={recommendationSignalFor}
+                statusLabel={(status) => statusMeta[status].label}
+                onAdd={(result, status) => addFromSearch(result, status, 'none', true)}
+                onOpen={(entry) => {
+                  setSelectedId(entry.id)
+                  setView('library')
+                }}
+                onWatch={(result) => openWatch(addFromSearch(result, 'watching', 'none', true))}
+              />
+            </motion.section>
+          )}
+
           {view === 'upcoming' && (
             <motion.section
               key="upcoming"
@@ -3069,6 +3193,7 @@ function App() {
             }}
             onClose={() => setAnimeChannelOpen(false)}
             onDetails={(id) => { setSelectedId(id); setView('library') }}
+            story={story}
           />
         ) : (
           <motion.button
@@ -3142,12 +3267,26 @@ function App() {
         {endCard && (
           <EndCardModal
             snapshot={endCard}
+            story={story}
             close={() => setEndCard(null)}
             openLibrary={() => {
               setSelectedId(endCard.entry.id)
               setView('library')
               setEndCard(null)
             }}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {vaultOpen && (
+          <LibraryVault
+            status={homeCopy}
+            library={library}
+            createId={createId}
+            onRestore={restoreBackup}
+            onImport={applyListImport}
+            close={() => setVaultOpen(false)}
           />
         )}
       </AnimatePresence>
@@ -3533,14 +3672,27 @@ function ImportPreviewModal({
 
 function EndCardModal({
   snapshot,
+  story,
   close,
   openLibrary,
 }: {
   snapshot: EndCardSnapshot
+  story: {
+    find: (id: string) => Promise<StoryStep | null>
+    progress: (anilistId: number) => { status: string; progress: number; episodesTotal?: number | null } | undefined
+    start: (fromId: string, relation: RelationInfo, plan: boolean) => Promise<void>
+  }
   close: () => void
   openLibrary: () => void
 }) {
   const { entry, completedAt } = snapshot
+  const [step, setStep] = useState<StoryStep | null>(null)
+  const [starting, setStarting] = useState<number | null>(null)
+  useEffect(() => {
+    let live = true
+    story.find(entry.id).then((found) => { if (live) setStep(found) }, () => {})
+    return () => { live = false }
+  }, [entry.id, story])
   const runDays = entry.startedAt ? Math.max(1, daysSince(entry.startedAt)) : 1
   const scoreLabel = entry.rating ? `${entry.rating.toFixed(1)} / 10` : 'Unscored'
   const episodeLabel = entry.episodesTotal ? `${entry.episodesTotal} episodes` : `${entry.progress} logged`
@@ -3580,6 +3732,19 @@ function EndCardModal({
           <p>
             Archive this run, add a score while it is fresh, or open the title to plan a rewatch.
           </p>
+          {step && (
+            <StoryNext
+              variant="card"
+              buttonClass="icon-text-button strong"
+              step={step}
+              tracked={story.progress}
+              starting={starting}
+              onStart={(relation, plan) => {
+                setStarting(relation.anilistId)
+                void story.start(entry.id, relation, plan).then(close, () => setStarting(null))
+              }}
+            />
+          )}
           <div className="end-card-actions">
             <button className="icon-text-button" type="button" onClick={close}>
               <Check size={16} />

@@ -153,3 +153,55 @@ export async function postAniList<T>(query: string, variables: Record<string, un
 
   return payload.data
 }
+
+// The fields a list or season card needs. Details (staff, characters,
+// relations) load later, the first time a title is opened.
+export const cardMediaFields = `
+  id
+  idMal
+  isAdult
+  siteUrl
+  title { romaji english native }
+  synonyms
+  format
+  status
+  episodes
+  duration
+  description(asHtml: false)
+  season
+  seasonYear
+  coverImage { extraLarge large color }
+  bannerImage
+  genres
+  tags { name rank isMediaSpoiler }
+  averageScore
+  meanScore
+  popularity
+  favourites
+  source
+  countryOfOrigin
+  nextAiringEpisode { episode airingAt timeUntilAiring }
+  studios(isMain: true) { nodes { name } }
+`
+
+const pause = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const timer = window.setTimeout(resolve, ms)
+  signal?.addEventListener('abort', () => { window.clearTimeout(timer); reject(new DOMException('Cancelled', 'AbortError')) }, { once: true })
+})
+
+// For bulk work (imports, season pages): waits out AniList's rate limit
+// instead of failing, and spaces requests so a large list stays polite.
+export async function postAniListPatiently<T>(query: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await postAniList<T>(query, variables, signal)
+    } catch (error) {
+      if (signal?.aborted || attempt >= 3 || !(error instanceof Error) || !/\b429\b|too many/i.test(error.message)) throw error
+      await pause(15_000 * (attempt + 1), signal)
+    }
+  }
+}
+
+export function spaceRequests(signal?: AbortSignal) {
+  return pause(800, signal)
+}

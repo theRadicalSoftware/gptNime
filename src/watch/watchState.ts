@@ -17,7 +17,27 @@ export type WatchTitle = {
 
 export type WatchRequest = { id: string; episode?: number; serial: number }
 export type Language = 'sub' | 'dub'
+// A phone or tablet reaches GPTNime through an SSH tunnel to this computer.
+// WCO's signed links belong to the computer's browser, so a phone plays them
+// through the local relay and prepares in the profile the computer last used.
+export function relayViewer() {
+  const agent = navigator as Navigator & { userAgentData?: { mobile?: boolean } }
+  return agent.userAgentData?.mobile === true || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+}
+
+export function relayUrl(browser: 'chrome' | 'brave', playbackId: string) {
+  return `/api/wco/media/${browser}/${encodeURIComponent(playbackId)}`
+}
+
+let relayBrowser: Promise<'chrome' | 'brave'> | null = null
 export async function localPlaybackBrowser(): Promise<'chrome' | 'brave'> {
+  if (relayViewer()) {
+    relayBrowser ??= fetch('/api/wco/status', { headers: { 'X-WCO-Browser': 'chrome' } })
+      .then((response) => response.json())
+      .then((status) => status.preferred === 'brave' ? 'brave' as const : 'chrome' as const)
+      .catch(() => { relayBrowser = null; return 'chrome' as const })
+    return relayBrowser
+  }
   const browserNavigator = navigator as Navigator & { brave?: { isBrave: () => Promise<boolean> } }
   try { if (await browserNavigator.brave?.isBrave()) return 'brave' } catch { /* Use the default installed browser. */ }
   return 'chrome'

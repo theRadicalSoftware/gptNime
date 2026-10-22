@@ -2,7 +2,10 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Info, Link2, LoaderCircle, Maximize2, Minimize2, MonitorUp, PictureInPicture2, Play, RotateCcw, Search, SkipForward, Subtitles, X } from 'lucide-react'
 import type { Language, WatchRequest, WatchTitle } from './watchState'
-import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, readWatchState, recentWatch, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
+import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, readWatchState, recentWatch, relayUrl, relayViewer, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
+import StoryNext, { type StoryProgress } from '../library/StoryNext'
+import type { RelationInfo } from '../library/model'
+import type { StoryStep } from '../library/story'
 import { fetchSkipSegments, skipLabels, type SkipSegment } from './skipTimes'
 import { episodePreparation, prefetchEpisode, prefetchSelection, retainPlayback, scheduleEpisodePreparation } from './watchPreparation'
 import './WatchCinema.css'
@@ -13,7 +16,10 @@ type Props = {
   onComplete: (id: string, episode: number) => void
   onDetails: (id: string) => void
   onClose: () => void
+  story: Story
 }
+// What comes after a finale, supplied by the library.
+type Story = { find: (id: string) => Promise<StoryStep | null>; progress: (anilistId: number) => StoryProgress | undefined; start: (fromId: string, relation: RelationInfo, plan: boolean) => Promise<void> }
 type PlaybackPosition = { time: number; paused: boolean; rate: number; volume: number; muted: boolean }
 type Preparation = { url?: string; language?: Language; search?: boolean; choose?: boolean; refresh?: boolean; continuation?: PlaybackPosition }
 type Match = { url: string; title: string; language?: Language }
@@ -66,7 +72,7 @@ function moveCinema(host: HTMLElement, destination: HTMLElement, blocked: () => 
   if (video.readyState >= 1) restore()
 }
 
-export default function WatchCinema({ entries, request, onComplete, onDetails, onClose }: Props) {
+export default function WatchCinema({ entries, request, onComplete, onDetails, onClose, story }: Props) {
   const [selection, setSelection] = useState<Selection>(() => {
     const last = request ? null : recentWatch(entries)
     const entry = entries.find((item) => item.id === request?.id) || last?.entry || entries[0]
@@ -304,7 +310,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
         {windowError && <p className="cinema-message cinema-error" role="alert">{windowError}</p>}
         <div className="cinema-workspace">
           <div className="cinema-main">
-            {entry ? <EpisodePlayer key={`${entry.id}:${selection.episode}`} entry={entry} episode={selection.episode} intent={selection.intent} preparation={selection.preparation} onComplete={onComplete} onEpisode={(episode, preparation) => setSelection((previous) => ({ id: entry.id, episode, preparation, intent: previous.intent + 1 }))} onRevealSource={() => { if (layout === 'dock') setLayout('cinema') }} onDetails={() => { if (layout !== 'window') setLayout('dock'); onDetails(entry.id) }} /> : <div className="cinema-empty"><Film size={38} /><h3>{entries.length ? 'Choose your next watch' : 'Your cinema starts here'}</h3><p>{entries.length ? 'Pick a title from your library to open its watch desk.' : 'Add a show or movie to your library, then press Watch.'}</p>{!entries.length && <button className="cinema-button primary" onClick={onClose}>Back to gptNime</button>}</div>}
+            {entry ? <EpisodePlayer key={`${entry.id}:${selection.episode}`} entry={entry} episode={selection.episode} intent={selection.intent} preparation={selection.preparation} onComplete={onComplete} story={story} onEpisode={(episode, preparation) => setSelection((previous) => ({ id: entry.id, episode, preparation, intent: previous.intent + 1 }))} onRevealSource={() => { if (layout === 'dock') setLayout('cinema') }} onDetails={() => { if (layout !== 'window') setLayout('dock'); onDetails(entry.id) }} /> : <div className="cinema-empty"><Film size={38} /><h3>{entries.length ? 'Choose your next watch' : 'Your cinema starts here'}</h3><p>{entries.length ? 'Pick a title from your library to open its watch desk.' : 'Add a show or movie to your library, then press Watch.'}</p>{!entries.length && <button className="cinema-button primary" onClick={onClose}>Back to gptNime</button>}</div>}
           </div>
           <aside className="cinema-library">
             <div className="cinema-library-heading"><div><span className="eyebrow">Your collection</span><h3>Tonight’s lineup</h3></div><span className="cinema-count">{entries.length}</span></div>
@@ -322,10 +328,10 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
   )
 }
 
-type Source = { url: string; name: string; key: string; local: boolean; autoplay?: boolean; provider?: 'wco'; language?: Language; playbackId?: string; cached?: boolean; continuation?: PlaybackPosition }
+type Source = { url: string; name: string; key: string; local: boolean; autoplay?: boolean; provider?: 'wco'; language?: Language; playbackId?: string; cached?: boolean; continuation?: PlaybackPosition; relayed?: boolean }
 
-function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpisode, onDetails, onRevealSource }: {
-  entry: WatchTitle; episode: number; intent: number; preparation?: Preparation; onComplete: Props['onComplete']; onEpisode: (episode: number, preparation?: Preparation) => void; onDetails: () => void; onRevealSource: () => void
+function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story, onEpisode, onDetails, onRevealSource }: {
+  entry: WatchTitle; episode: number; intent: number; preparation?: Preparation; onComplete: Props['onComplete']; story: Story; onEpisode: (episode: number, preparation?: Preparation) => void; onDetails: () => void; onRevealSource: () => void
 }) {
   const [settings, setSettings] = useState(readWatchState)
   const [infoOpen, setInfoOpen] = useState(false)
@@ -400,6 +406,18 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
   const aheadKey = `${entry.id}:${episode}:${settings.language}`
   const remaining = duration > 0 ? (duration - currentTime) / speed : Infinity
   const nearEnd = remaining <= 60
+  // Near the end of a finale, look up what comes next in the story.
+  const finale = !nextAvailable && (ended || remaining <= 180)
+  const [storyStep, setStoryStep] = useState<StoryStep | null>(null)
+  const [storyStarting, setStoryStarting] = useState<number | null>(null)
+  const findStory = useRef(story.find)
+  findStory.current = story.find
+  useEffect(() => {
+    if (!finale) return
+    let live = true
+    findStory.current(entry.id).then((step) => { if (live) setStoryStep(step) }, () => {})
+    return () => { live = false }
+  }, [finale, entry.id])
   // Prepared episodes stay ready for ten minutes, so the next one can start
   // preparing before the ending credits; Skip ending then lands on it at once.
   const aheadEpisode = !source && intent === 0 ? episode : source?.provider === 'wco' && nextAvailable && remaining <= 180 ? episode + 1 : 0
@@ -704,7 +722,9 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
       const playbackId = typeof result.playbackId === 'string' ? result.playbackId : undefined
       if (playbackId) setVersionLeases((previous) => ({ ...previous, [resolvedLanguage]: playbackId }))
       const continuation = options.continuation || versionPosition.current || undefined
-      chooseSource({ url: videoUrl, name: result.title || `${entry.title} · ${episodeLabel(entry, episode)}`, key: sourceFingerprint(resolvedPage), local: false, autoplay: !continuation?.paused, provider: 'wco', language: resolvedLanguage, playbackId, cached: result.cached === true && !options.refresh, continuation })
+      // A phone on the SSH tunnel plays through this computer; see relayViewer.
+      const relayed = relayViewer() && !!playbackId
+      chooseSource({ url: relayed ? relayUrl(providerBrowserRef.current, playbackId!) : videoUrl, name: result.title || `${entry.title} · ${episodeLabel(entry, episode)}`, key: sourceFingerprint(resolvedPage), local: false, autoplay: !continuation?.paused, provider: 'wco', language: resolvedLanguage, playbackId, cached: result.cached === true && !options.refresh, continuation, relayed })
       if (result.notice) setNotice(result.notice)
     } catch (error) {
       if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : 'WCO could not prepare this episode. Try again.'); onRevealSource() }
@@ -715,6 +735,16 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
 
   const handleMediaError = () => {
     setPlaying(false); setLoading(false)
+    const video = videoRef.current
+    // Before asking WCO for a fresh source, try the same one through this
+    // computer, which reaches it as the browser that prepared it.
+    if (source?.provider === 'wco' && source.playbackId && !source.relayed) {
+      // Keep the position and play/pause state the viewer had, including a pending version switch.
+      const at = video && Number.isFinite(video.currentTime) ? video.currentTime : 0
+      const carried = versionPosition.current || (video && at > 0 ? { time: at, paused: !playing, rate: video.playbackRate, volume: video.volume, muted: video.muted } : undefined)
+      chooseSource({ ...source, url: relayUrl(providerBrowserRef.current, source.playbackId), relayed: true, autoplay: carried ? !carried.paused : source.autoplay, continuation: carried })
+      return
+    }
     const identity = source?.playbackId || source?.url
     if (source?.provider === 'wco' && source.cached && identity && cachedRetry.current !== identity) {
       cachedRetry.current = identity
@@ -934,10 +964,13 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, onEpis
       <button className="cinema-text-button" onClick={onDetails}>Title details<ExternalLink size={12} /></button>
     </aside>}
     {!preparing && tab === 'wco' && ahead?.key === aheadKey && <div className="cinema-ahead" role="status">{ahead.expiresAt ? <Check size={12} /> : <LoaderCircle size={12} className="cinema-version-spinner" />}<span>{ahead.expiresAt ? movie ? 'Movie prepared' : `Episode ${ahead.episode} prepared` : movie ? 'Getting your movie ready in the background…' : `Getting episode ${ahead.episode} ready in the background…`}</span></div>}
-    {ended && <div className={`cinema-finished${upNext !== null ? ' is-counting' : ''}`} role="status"><span><Check size={17} />{upNext !== null ? `Episode ${episode + 1} starts in ${upNext}…` : nextAvailable ? 'Ready for the next episode?' : 'That’s a wrap. Thanks for watching.'}</span>{nextAvailable && <span className="cinema-finished-actions">
+    {ended && <div className={`cinema-finished${upNext !== null ? ' is-counting' : ''}${!nextAvailable && storyStep ? ' has-story' : ''}`} role="status"><span><Check size={17} />{upNext !== null ? `Episode ${episode + 1} starts in ${upNext}…` : nextAvailable ? 'Ready for the next episode?' : 'That’s a wrap. Thanks for watching.'}</span>{nextAvailable && <span className="cinema-finished-actions">
       {upNext !== null && <button className="cinema-button" onClick={() => setUpNext(null)}>Cancel</button>}
       <button className="cinema-button primary" onClick={() => { setUpNext(null); onEpisode(episode + 1) }}>{upNext !== null ? 'Play now' : `Episode ${episode + 1}`}<ChevronRight size={16} /></button>
-    </span>}</div>}
+    </span>}{!nextAvailable && storyStep && <StoryNext variant="cinema" buttonClass="cinema-button primary" step={storyStep} tracked={story.progress} starting={storyStarting} onStart={(relation, plan) => {
+      setStoryStarting(relation.anilistId)
+      void story.start(entry.id, relation, plan).finally(() => setStoryStarting(null))
+    }} />}</div>}
     <div className="cinema-source-desk">
       <div className="cinema-source-heading"><span className="eyebrow">Watch your way</span><span>Choose a source</span></div>
       <div className="cinema-source-tabs" role="group" aria-label="Video source">

@@ -1,6 +1,8 @@
-import { access } from 'node:fs/promises'
+import { access, stat } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { Readable } from 'node:stream'
+import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import type { Plugin } from 'vite'
 import type { Page, Response } from 'playwright'
 import { backgroundRunner, WcoBrowser, WcoBrowserError, wcoProfileDirectory } from './wcoBrowser'
@@ -134,6 +136,10 @@ export class RecentSources {
       return true
     }
     return false
+  }
+  // The prepared source behind a playback lease, for the media relay.
+  find(playbackId: string) {
+    for (const entry of this.entries.values()) if (entry.result.playbackId === playbackId && entry.expires > this.now()) return entry.result
   }
   retainPair(playbackId: string, alternateId?: string) {
     const retained = this.retain(playbackId)
@@ -417,6 +423,8 @@ async function prepareWco(request: ResolveRequest, signal: AbortSignal, session:
   if (request.movie && request.url?.includes('/anime/')) throw new PlaybackError('Choose the movie result instead of a TV series.')
   const page = await session.getPage()
   const revision = session.revision
+  // The relay asks for media as this same browser; its identity is read, never changed.
+  session.userAgent ||= await page.evaluate(() => navigator.userAgent).catch(() => '')
   signal.throwIfAborted()
   session.setPreparing(true)
   const acceptedMedia = new Set<string>()
@@ -607,6 +615,70 @@ async function readRequest(req: IncomingMessage): Promise<ResolveRequest> {
   return { url: url || undefined, titles: titles.map((title: string) => title.trim()), episode: raw.episode, language: raw.language, movie: raw.movie, choose: raw.choose === true, refresh: raw.refresh === true, intent: raw.intent === true }
 }
 
+// A phone watching through an SSH tunnel cannot use the signed link itself: it
+// was issued to this computer's browser. The relay streams that one prepared
+// source back through the tunnel, asking as the browser that prepared it (same
+// computer, same identity, no cookies or referrer). It only serves sources the
+// connector prepared, by their random playback lease, never an arbitrary URL.
+type Relay = { source: string; agent: string; until: number }
+const relayCeiling = 4 * 60 * 60_000
+export class MediaRelays {
+  private relays = new Map<string, Relay>()
+  constructor(private now: () => number = Date.now) {}
+  get(playbackId: string, sources: RecentSources | undefined, agent: string): Relay | null {
+    for (const [id, relay] of this.relays) if (relay.until <= this.now()) this.relays.delete(id)
+    const known = this.relays.get(playbackId)
+    if (known) return known
+    const result = sources?.find(playbackId)
+    if (!result || !videoSource(result.source) || !agent) return null
+    // A source that started playing keeps relaying while the episode is watched.
+    const relay = { source: result.source, agent, until: this.now() + relayCeiling }
+    this.relays.set(playbackId, relay)
+    if (this.relays.size > 16) this.relays.delete(this.relays.keys().next().value!)
+    return relay
+  }
+}
+
+const relayHeaders = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']
+export async function relayMedia(req: IncomingMessage, res: ServerResponse, relay: Relay) {
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  res.once('close', abort)
+  try {
+    const range = req.headers.range
+    const upstream = await fetch(relay.source, {
+      headers: { 'User-Agent': relay.agent, Accept: '*/*', 'Accept-Encoding': 'identity', ...(typeof range === 'string' && /^bytes=\d*-\d*$/.test(range) ? { Range: range } : {}) },
+      redirect: 'follow', referrerPolicy: 'no-referrer', credentials: 'omit', signal: controller.signal,
+    })
+    // Only video reaches the phone; provider pages and errors never do.
+    if (![200, 206].includes(upstream.status) || !/^video\//i.test(upstream.headers.get('content-type') || '') || !upstream.body) {
+      await upstream.body?.cancel().catch(() => {})
+      json(res, 502, { error: 'WCO’s video did not answer. Retry this episode.' }); return
+    }
+    const headers: Record<string, string> = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Accept-Ranges': 'bytes' }
+    for (const name of relayHeaders) { const value = upstream.headers.get(name); if (value) headers[name] = value }
+    res.writeHead(upstream.status, headers)
+    if (req.method === 'HEAD') { await upstream.body.cancel().catch(() => {}); res.end(); return }
+    const body = Readable.fromWeb(upstream.body as unknown as WebReadableStream)
+    body.on('error', () => res.destroy())
+    body.pipe(res)
+    await new Promise<void>((resolve) => res.once('close', resolve))
+  } catch {
+    if (!res.headersSent) json(res, 502, { error: 'WCO’s video did not answer. Retry this episode.' })
+    else res.destroy()
+  } finally {
+    res.removeListener('close', abort)
+  }
+}
+
+// The profile most recently used by the computer's own browser. A phone has no
+// WCO profile of its own, so it prepares in the session that is already trusted.
+async function preferredBrowser(): Promise<'chrome' | 'brave'> {
+  const used = async (profile: string) => (await stat(`${profile}/Default/Cookies`).catch(() => null))?.mtimeMs || 0
+  const [chrome, brave] = await Promise.all([used(wcoProfileDirectory), used(`${wcoProfileDirectory}-brave`)])
+  return brave > chrome ? 'brave' : 'chrome'
+}
+
 export function wcoPlugin(): Plugin {
   // Provider sources can be bound to the preparing browser. Use the installed
   // viewer's browser, without overriding its identity or copying personal data.
@@ -615,9 +687,23 @@ export function wcoPlugin(): Plugin {
     brave: { path: bravePath, session: new WcoBrowser(bravePath, `${wcoProfileDirectory}-brave`), resumes: new Map<string, ResumePoint>() },
   }
   const preparation = new WcoPreparation<ResolveResult>()
+  const relays = { chrome: new MediaRelays(), brave: new MediaRelays() }
   const shutdown = async () => { await preparation.close(); await Promise.all(Object.values(providers).map(({ session }) => session.close())) }
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     const path = req.url?.split('?')[0]
+    const media = path?.match(/^\/api\/wco\/media\/(chrome|brave)\/([a-f0-9-]{36})$/i)
+    if (media) {
+      // A video element cannot send custom headers; fetch metadata keeps other
+      // sites from embedding it, and the lease ID is random and short-lived.
+      const site = req.headers['sec-fetch-site']
+      if (!isLocal(req) || (site !== undefined && site !== 'same-origin')) { json(res, 403, { error: 'The WCO connector is available only on this computer.' }); return }
+      if (req.method !== 'GET' && req.method !== 'HEAD') { json(res, 405, { error: 'Method not allowed.' }); return }
+      const browser = media[1] as 'chrome' | 'brave'
+      const { session } = providers[browser]
+      const relay = relays[browser].get(media[2].toLowerCase(), recentSources.get(session), session.userAgent)
+      if (!relay) { json(res, 404, { error: 'This video is no longer prepared. Retry this episode.' }); return }
+      await relayMedia(req, res, relay); return
+    }
     if (path !== '/api/wco/status' && path !== '/api/wco/resolve' && path !== '/api/wco/prefetch' && path !== '/api/wco/focus' && path !== '/api/wco/retain') { next(); return }
     if (!isLocal(req)) { json(res, 403, { error: 'The WCO connector is available only on this computer.' }); return }
     const browser = providerBrowser(req.headers['x-wco-browser'])
@@ -625,7 +711,7 @@ export function wcoPlugin(): Plugin {
     const { session, resumes, path: browserPath } = providers[browser]
     if (path === '/api/wco/status' && req.method === 'GET') {
       const available = await access(browserPath).then(() => true, () => false)
-      json(res, 200, { available, browser, automatic: true, persistent: true, hiddenPreparation: !!await backgroundRunner(), ...preparation.status }); return
+      json(res, 200, { available, browser, preferred: await preferredBrowser(), automatic: true, persistent: true, hiddenPreparation: !!await backgroundRunner(), ...preparation.status }); return
     }
     if (!['/api/wco/resolve', '/api/wco/prefetch', '/api/wco/focus', '/api/wco/retain'].includes(path) || req.method !== 'POST') { json(res, 405, { error: 'Method not allowed.' }); return }
     if (req.headers.origin !== `http://${req.headers.host}` || !req.headers['content-type']?.startsWith('application/json')) {
