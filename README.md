@@ -13,7 +13,7 @@ GPTNime is a local-first anime watch ledger for tracking what you are watching, 
 - `Recommended for you` shelf seeded by ratings, favorites, rewatches, and completed titles while excluding already tracked anime.
 - Anime-fan stats: completion rate, month heatmap, top genres/studios, average score by genre, movie/series mix, episodes watched this month, longest pause, and rewatch count.
 - Notification drawer with stale threshold, snooze, dismiss, mute title, watching-only, and high-priority-only controls.
-- GPTNime Cinema with Watch actions on cards, details, episode lists, and Continue Watching; a full-library lineup, movie support, docked playback that can float on top of other tabs and windows, pop-out / pop-in windows, autoplay into the next episode, and **Skip opening / Skip ending** buttons from AniSkip's community times (also in fullscreen, or press S).
+- GPTNime Cinema with Watch actions on cards, details, episode lists, and Continue Watching; a full-library lineup, movie support, docked playback that can float on top of other tabs and windows, pop-out / pop-in windows, autoplay into the next episode, and **Skip opening / Skip ending** buttons from AniSkip's community times (also in fullscreen, or press S). A video that freezes partway through reconnects by itself at the same second.
 - Local video files and direct MP4 / WebM URLs, VTT subtitles, playback speed, per-source resume points, and progress marking after 90% actual playback.
 - Automatic WCO title/episode lookup and native playback through the local connector. Click Watch or an episode; optional page links update the episode and language automatically. Dedicated Chrome and Brave sessions preserve provider verification between attempts and prepare sources for the viewer’s browser on a private virtual display when Xvfb is available. Direct search, ten-minute reuse of prepared sources, preparation while browsing Watch actions, and next-episode preparation near the end reduce the wait after Play; Show WCO window remains an explicit action. The cinema distinguishes verification from premium-only access. Provider availability still applies. See [`docs/CINEMA.md`](docs/CINEMA.md).
 - **This season**: the season's 100 most popular shows from AniList, with new seasons of shows you watch first, then the rest ordered by fit with what you rate, finish and rewatch. One click adds a show to Planning; season switcher; option to hide tracked shows.
@@ -58,12 +58,13 @@ npm run build
 npm run lint
 npm run test:cinema
 npm run test:wco
+npm run test:watch-recovery
 npm run test:storage
 npm run test:platform
 npm run test:wco-session # requires a desktop display
 ```
 
-Browser checks use installed Chrome (`/usr/bin/google-chrome`; override with `CHROME_PATH`). Run `CINEMA_HEADED=1 npm run test:cinema` on a desktop (or under `xvfb-run`) to also test native Document Picture-in-Picture and the fullscreen Skip hand-over. If another project holds a suite's port, set `WCO_TEST_PORT` or `VERSION_TEST_PORT`. Tests start an isolated Vite server on port 5197, use fixture library data, and save screenshots under `output/cinema/`.
+Browser checks use installed Chrome (`/usr/bin/google-chrome`; override with `CHROME_PATH`). Run `CINEMA_HEADED=1 npm run test:cinema` on a desktop (or under `xvfb-run`) to also test native Document Picture-in-Picture and the fullscreen Skip hand-over. If another project holds a suite's port, set `WCO_TEST_PORT`, `VERSION_TEST_PORT` or `RECOVERY_TEST_PORT`. Tests start an isolated Vite server on port 5197, use fixture library data, and save screenshots under `output/cinema/`.
 
 ## Data Storage
 

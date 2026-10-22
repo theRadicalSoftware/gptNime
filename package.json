@@ -12,6 +12,7 @@
     "test:wco": "node tests/wco.browser.mjs",
     "test:watch-startup": "node tests/watch-startup.browser.mjs",
     "test:watch-version": "node tests/watch-version.browser.mjs",
+    "test:watch-recovery": "node tests/watch-recovery.browser.mjs",
     "test:wco-session": "node tests/wco-session.browser.mjs",
     "test:wco-preparation": "node tests/wco-preparation.mjs",
     "test:storage": "node tests/storage.browser.mjs",

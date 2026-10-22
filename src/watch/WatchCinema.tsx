@@ -26,6 +26,19 @@ type Match = { url: string; title: string; language?: Language }
 type Selection = { id: string; episode: number; intent: number; preparation?: Preparation }
 type Layout = 'cinema' | 'dock' | 'window'
 type PictureWindow = Window & { documentPictureInPicture?: { requestWindow: (options: { width: number; height: number }) => Promise<Window> } }
+type Stall = { key: string; position: PlaybackPosition; step: number; settledAt: number }
+// Twelve seconds with neither playback nor new data is a stall, not a slow
+// connection; a stall soon after a recovery continues the same round.
+const STALL_MS = 12_000
+const STALL_ROUND_MS = 90_000
+
+// End of the buffered range that holds the playhead, or the playhead itself.
+function bufferedAhead(video: HTMLVideoElement) {
+  for (let index = 0; index < video.buffered.length; index++) {
+    if (video.buffered.start(index) <= video.currentTime + 0.1 && video.currentTime <= video.buffered.end(index)) return video.buffered.end(index)
+  }
+  return video.currentTime
+}
 
 // One unfinished transfer per video. A quick pop-out/pop-in keeps the first
 // snapshot, which still describes the playback the person was watching.
@@ -363,6 +376,11 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
   const autoplayAttempted = useRef(false)
   const cachedRetry = useRef('')
   const versionPosition = useRef<PlaybackPosition | null>(null)
+  // A stream that stops partway through. `step` climbs while stalls repeat:
+  // reconnect, then (WCO) one fresh copy, then a Retry card at that second.
+  const startedRef = useRef(false)
+  const stallRef = useRef<Stall | null>(null)
+  const [recovery, setRecovery] = useState<{ key: string; at: number; phase: 'reconnecting' | 'fresh' | 'back' | 'stopped' } | null>(null)
   const [versionLeases, setVersionLeases] = useState<Partial<Record<Language, string>>>({})
   const versionAttempted = useRef(new Set<Language>())
   const resolutionRef = useRef<AbortController | null>(null)
@@ -605,10 +623,11 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
   }, [saveBookmark])
 
   useEffect(() => {
-    if (!loading) return
+    // Once an episode has played, or while it is reconnecting, the stall watchdog below decides.
+    if (!loading || startedRef.current || (stallRef.current && stallRef.current.key === sourceRef.current?.key && !stallRef.current.settledAt)) return
     const timer = window.setTimeout(() => setMediaError(source?.provider === 'wco' ? 'WCO’s video is taking longer than expected. Retry this episode to prepare a fresh source.' : 'This source is taking longer than expected. Check the video URL or choose another source.'), 15000)
     return () => window.clearTimeout(timer)
-  }, [loading, source?.url, source?.provider])
+  }, [loading, source?.url, source?.provider, sourceGeneration])
 
   const updateSettings = (patch: Partial<ReturnType<typeof readWatchState>>) => {
     const next = { ...readWatchState(), ...patch }
@@ -648,9 +667,9 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
     if (position.paused) video.pause()
   }
 
-  const chooseSource = (next: Source) => {
+  const chooseSource = (next: Source, reconnect = false) => {
     const video = videoRef.current
-    if (video && sourceRef.current?.url === next.url && video.getAttribute('src') === next.url && !video.error && video.readyState >= 1) {
+    if (!reconnect && video && sourceRef.current?.url === next.url && video.getAttribute('src') === next.url && !video.error && video.readyState >= 1) {
       // A recent-source hit can keep the already buffered video and timestamp.
       // React will not emit loadedmetadata/canplay again for an unchanged URL.
       sourceRef.current = next
@@ -664,6 +683,7 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
     sourceRef.current = next
     versionPosition.current = next.continuation || null
     autoplayAttempted.current = false
+    startedRef.current = false
     if (!next.continuation) { markedRef.current = false; playedRanges.current = [] }
     setSource(next); setSourceGeneration((generation) => generation + 1); setLoading(true); setError(''); setNotice('')
   }
@@ -756,6 +776,83 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
       setMediaError(source?.provider === 'wco' ? `WCO’s video could not load in this browser. Retry this ${itemLabel} to prepare a fresh source for your browser.` : 'This video could not be played. Check that the link points to a supported video file, or try an MP4 / WebM file.')
     }
   }
+
+  const stopRecovery = (active: Source, position: PlaybackPosition) => {
+    // Retry, Sub/Dub and the float all continue from this second.
+    versionPosition.current = position
+    videoRef.current?.pause()
+    setRecovery({ key: active.key, at: position.time, phase: 'stopped' })
+    setMediaError(`The ${itemLabel} stopped at ${clockLabel(position.time)} and couldn’t reconnect. ${active.provider === 'wco' ? 'Retry gets a fresh copy and picks up right there.' : 'Check your connection, then retry to pick up right there.'}`)
+  }
+
+  // A stall first reconnects to the same video at the same second, which needs
+  // nothing from WCO. If that stalls too, ask WCO once for a fresh copy, as
+  // Retry would, before stopping with a Retry card that keeps the moment.
+  const recoverStream = () => {
+    const video = videoRef.current
+    const active = sourceRef.current
+    if (!video || !active) return
+    const previous = stallRef.current?.key === active.key ? stallRef.current : null
+    const step = previous && (!previous.settledAt || Date.now() - previous.settledAt < STALL_ROUND_MS) ? previous.step + 1 : 0
+    // A reconnecting video starts from zero; keep the moment it first stopped.
+    const position = previous && !previous.settledAt ? previous.position : { time: video.currentTime, paused: false, rate: video.playbackRate, volume: video.volume, muted: video.muted }
+    stallRef.current = { key: active.key, position, step, settledAt: 0 }
+    if (step === 0) {
+      setRecovery({ key: active.key, at: position.time, phase: 'reconnecting' })
+      chooseSource({ ...active, autoplay: true, continuation: position }, true)
+    } else if (step === 1 && active.provider === 'wco') {
+      setRecovery({ key: active.key, at: position.time, phase: 'fresh' })
+      void prepareEpisode({ refresh: true, continuation: position }).finally(() => { if (sourceRef.current === active) stopRecovery(active, position) })
+    } else stopRecovery(active, position)
+  }
+
+  const retryStream = () => {
+    const active = sourceRef.current
+    const stall = stallRef.current
+    if (active && stall?.key === active.key && stoppedAt !== null) {
+      // The person's retry begins a new round, so a later stall reconnects quietly again.
+      stallRef.current = { ...stall, step: -1, settledAt: 0 }
+      setRecovery({ key: active.key, at: stall.position.time, phase: active.provider === 'wco' ? 'fresh' : 'reconnecting' })
+    }
+    if (active?.provider === 'wco') { chooseTab('wco'); void prepareEpisode({ refresh: true }) }
+    else if (active) chooseSource({ ...active, autoplay: true, continuation: versionPosition.current || undefined }, true)
+  }
+
+  const stoppedAt = recovery?.phase === 'stopped' && recovery.key === source?.key ? recovery.at : null
+
+  const recoverRef = useRef(recoverStream)
+  recoverRef.current = recoverStream
+  useEffect(() => {
+    if (!source || source.local || mediaError || preparing) return
+    let mark = '', since = Date.now()
+    const settle = (stall: Stall, shown: boolean) => {
+      stall.settledAt = Date.now()
+      setRecovery(shown ? { key: stall.key, at: stall.position.time, phase: 'back' } : null)
+    }
+    const timer = window.setInterval(() => {
+      const video = videoRef.current
+      let stall = stallRef.current?.key === source.key ? stallRef.current : null
+      if (stall?.settledAt && Date.now() - stall.settledAt > STALL_ROUND_MS) { stallRef.current = null; stall = null }
+      if (!video || video.dataset.cinemaMoving || video.error) { mark = ''; return }
+      if (stall && !stall.settledAt) {
+        if (startedRef.current && (video.ended || video.currentTime >= stall.position.time + 1.5)) settle(stall, !video.ended)
+        // Paused by the person, or waiting on the browser's play click: not a stall.
+        else if (video.paused && autoplayAttempted.current && video.readyState >= 2) settle(stall, false)
+      }
+      const recovering = !!stall && !stall.settledAt
+      if (video.ended || (startedRef.current ? video.paused : !recovering)) { mark = ''; return }
+      const now = `${video.currentTime.toFixed(1)}:${bufferedAhead(video).toFixed(1)}`
+      if (now !== mark) { mark = now; since = Date.now() }
+      else if (Date.now() - since >= STALL_MS) { mark = ''; recoverRef.current() }
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [source, mediaError, preparing])
+
+  useEffect(() => {
+    if (recovery?.phase !== 'back') return
+    const timer = window.setTimeout(() => setRecovery((current) => current?.phase === 'back' ? null : current), 2600)
+    return () => window.clearTimeout(timer)
+  }, [recovery])
 
   // Changes to saved pages or bookmarks must not restart a playing episode.
   const autoPrepare = useRef(() => {})
@@ -920,12 +1017,14 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
             if (video && source.autoplay && !autoplayAttempted.current && !video.dataset.cinemaMoving) {
               startVideo(video)
             }
-          }} onWaiting={() => setLoading(true)} onPlaying={() => { setPlaying(true); setLoading(false); setMediaError(''); setEnded(false); setUpNext(null) }} onTimeUpdate={handleTime} onPause={() => { setPlaying(false); saveBookmark() }} onEnded={() => finishRef.current()} onError={handleMediaError}>
+          }} onWaiting={() => setLoading(true)} onPlaying={() => { startedRef.current = true; setPlaying(true); setLoading(false); setMediaError(''); setEnded(false); setUpNext(null) }} onTimeUpdate={handleTime} onPause={() => { setPlaying(false); saveBookmark() }} onEnded={() => finishRef.current()} onError={handleMediaError}>
           {subtitle && <track key={subtitle.url} src={subtitle.url} kind="subtitles" srcLang="en" label={subtitle.name} default onError={() => setError('These subtitles could not be loaded. Choose a valid WebVTT (.vtt) file.')} />}
         </video>
-        {loading && !mediaError && <span className="cinema-loading" role="status">Loading video…</span>}
+        {!mediaError && (recovery?.key === source.key && recovery.phase !== 'stopped'
+          ? <span key={recovery.phase} className={`cinema-loading cinema-recovery is-${recovery.phase}`} role="status">{recovery.phase === 'back' ? <Check size={13} aria-hidden="true" /> : <LoaderCircle size={13} className="cinema-version-spinner" aria-hidden="true" />}{recovery.phase === 'back' ? `Picked up at ${clockLabel(recovery.at)}` : recovery.phase === 'fresh' && providerPhase === 'capacity' ? `WCO is busy · picking up at ${clockLabel(recovery.at)} once it’s free` : `${recovery.phase === 'fresh' ? 'Getting a fresh copy' : 'Reconnecting'} · picking up at ${clockLabel(recovery.at)}`}</span>
+          : loading && <span className="cinema-loading" role="status">Loading video…</span>)}
         {activeSkip && !mediaError && <button key={`${activeSkip.kind}:${activeSkip.start}`} className="cinema-skip" title="Times from AniSkip, a community database" onClick={() => skipSection(activeSkip)}>{skipLabels[activeSkip.kind]}<SkipForward size={14} fill="currentColor" /></button>}
-        {mediaError && <div className="cinema-media-error" role="alert"><Film size={26} /><p>{mediaError}</p>{source.provider === 'wco' && <button className="cinema-button primary" disabled={preparing} onClick={() => { chooseTab('wco'); void prepareEpisode({ refresh: true }) }}>{preparing ? `Preparing ${itemLabel}…` : `Retry ${itemLabel}`}</button>}<button className="cinema-button" onClick={clearSource}>Choose another source</button></div>}
+        {mediaError && <div className="cinema-media-error" role="alert"><Film size={26} /><p>{mediaError}</p>{(source.provider === 'wco' || stoppedAt !== null) && <button className="cinema-button primary" disabled={preparing} onClick={retryStream}>{preparing ? `Preparing ${itemLabel}…` : stoppedAt !== null ? `Retry from ${clockLabel(stoppedAt)}` : `Retry ${itemLabel}`}</button>}<button className="cinema-button" onClick={() => { stallRef.current = null; setRecovery(null); clearSource() }}>Choose another source</button></div>}
       </> : <div className="cinema-screen-intro">
         <span className="cinema-night-tag"><span /> YOUR AFTER-HOURS ESCAPE</span>
         <span className="cinema-screen-episode">{episodeLabel(entry, episode)}{!movie && entry.episodesTotal ? ` / ${entry.episodesTotal}` : ''}</span>
