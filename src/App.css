@@ -263,8 +263,10 @@
 
 .main-stage {
   min-width: 0;
-  overflow-x: hidden;
-  padding: 22px clamp(18px, 3vw, 34px) 34px;
+  /* clip, not hidden: hidden makes this a scroll container, which stops the
+     top bar and the details panel from sticking. */
+  overflow-x: clip;
+  padding: 22px clamp(18px, 3vw, 34px) calc(34px + var(--cinema-dock-space, 0px));
 }
 
 .topbar {
@@ -273,8 +275,16 @@
   z-index: 20;
   gap: 12px;
   justify-content: space-between;
-  padding: 8px 0 18px;
+  margin: 0 -12px;
+  padding: 8px 12px 18px;
+  border-radius: 0 0 14px 14px;
   backdrop-filter: blur(16px);
+  transition: background 180ms ease, box-shadow 180ms ease;
+}
+
+.topbar-scrolled {
+  background: linear-gradient(180deg, rgba(16, 13, 14, 0.94), rgba(16, 13, 14, 0.84));
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
 }
 
 .search-panel,
@@ -1719,6 +1729,37 @@
   padding: 10px;
 }
 
+.active-row-cover {
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  transition: transform 140ms ease;
+}
+
+.active-row-cover:hover {
+  transform: translateY(-1px);
+}
+
+.active-row-title {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.active-row-title:hover {
+  color: var(--gold);
+}
+
+.active-row-cover img {
+  display: block;
+}
+
 .active-row img,
 .upcoming-row img {
   width: 58px;
@@ -2308,21 +2349,6 @@
   font-weight: 900;
 }
 
-.complete-run-stamp {
-  min-height: 26px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 9px;
-  border: 1px solid rgba(229, 193, 124, 0.58);
-  border-radius: 999px;
-  color: #171211;
-  background: rgba(229, 193, 124, 0.92);
-  font-size: 0.7rem;
-  font-weight: 950;
-  letter-spacing: 0.02em;
-}
-
 .cover-button .status-pill {
   position: absolute;
   left: 8px;
@@ -2343,34 +2369,6 @@
   top: 8px;
   right: 8px;
   backdrop-filter: blur(8px);
-}
-
-.cover-button .complete-run-stamp {
-  position: absolute;
-  left: 8px;
-  bottom: 40px;
-  backdrop-filter: blur(8px);
-}
-
-.season-cover-stack {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  display: inline-flex;
-  align-items: end;
-}
-
-.season-cover-stack img {
-  width: 28px;
-  height: 40px;
-  object-fit: cover;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  border-radius: 5px;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.34);
-}
-
-.season-cover-stack img + img {
-  margin-left: -10px;
 }
 
 .status-pill-watching {
@@ -2413,14 +2411,50 @@
   -webkit-box-orient: vertical;
 }
 
+.card-meta {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.card-meta > span:first-child {
+  flex: none;
+}
+
 .series-card-meta {
-  margin-top: -4px;
+  min-width: 0;
   overflow: hidden;
   color: var(--soft);
-  font-size: 0.76rem;
-  font-weight: 800;
+  font-size: 0.74rem;
+  font-weight: 700;
+  opacity: 0.8;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.series-card-meta::before {
+  content: '·';
+  margin-right: 6px;
+}
+
+.season-count-pill-complete {
+  color: #171211;
+  background: rgba(229, 193, 124, 0.92);
+  border-color: rgba(229, 193, 124, 0.58);
+}
+
+/* With a mouse, the episode steppers appear on the card you point at. */
+@media (hover: hover) {
+  .card-actions .mini-icon-button {
+    opacity: 0;
+    transition: opacity 140ms ease;
+  }
+
+  .anime-card:hover .card-actions .mini-icon-button,
+  .anime-card:focus-within .card-actions .mini-icon-button {
+    opacity: 1;
+  }
 }
 
 .card-actions {
@@ -2440,7 +2474,127 @@
 .detail-panel {
   position: sticky;
   top: 82px;
+  /* The details scroll beside the grid, so the grid keeps your place. */
+  max-height: max(320px, calc(100vh - 100px - var(--cinema-dock-space, 0px)));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-margin-top: 90px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(229, 193, 124, 0.32) transparent;
+}
+
+.detail-drawer {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.detail-drawer[open] {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.detail-drawer summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 10px 12px;
+  color: var(--gold);
+  cursor: pointer;
+  list-style: none;
+  border-radius: 8px;
+}
+
+.detail-drawer summary::-webkit-details-marker {
+  display: none;
+}
+
+.detail-drawer summary:hover {
+  background: rgba(229, 193, 124, 0.06);
+}
+
+.detail-drawer summary:focus-visible {
+  outline: 2px solid rgba(229, 193, 124, 0.7);
+  outline-offset: 2px;
+}
+
+.detail-drawer summary > span {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+
+.detail-drawer summary strong {
+  color: var(--paper);
+  font-size: 0.92rem;
+}
+
+.detail-drawer summary em {
   overflow: hidden;
+  color: var(--soft);
+  font-size: 0.74rem;
+  font-style: normal;
+  font-weight: 600;
+  opacity: 0.8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-drawer-chevron {
+  flex: none;
+  color: var(--soft);
+  transition: transform 160ms ease;
+}
+
+.detail-drawer[open] .detail-drawer-chevron {
+  transform: rotate(180deg);
+}
+
+.detail-drawer-body {
+  display: grid;
+  gap: 12px;
+  padding: 2px 12px 12px;
+  animation: detail-drawer-in 180ms ease-out both;
+}
+
+/* Sections inside a drawer sit flat inside it. */
+.detail-drawer-body > .info-section {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+@keyframes detail-drawer-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detail-drawer-body { animation: none; }
+  .detail-drawer-chevron { transition: none; }
+}
+
+.synopsis-block {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+}
+
+.synopsis-toggle {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--gold);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.synopsis-toggle:hover {
+  text-decoration: underline;
 }
 
 .detail-banner {
@@ -2460,6 +2614,8 @@
   display: grid;
   gap: 16px;
   padding: 16px;
+  /* Room for the end of the details to scroll clear of the cinema button. */
+  padding-bottom: calc(16px + var(--cinema-button-space, 72px));
 }
 
 .detail-title-row {
@@ -3222,10 +3378,17 @@
 }
 
 .synopsis {
-  max-height: 150px;
-  overflow: auto;
-  padding-right: 4px;
+  margin: 0;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  color: var(--soft);
   line-height: 1.55;
+}
+
+.synopsis-expanded {
+  display: block;
 }
 
 .notes-box textarea {
@@ -3809,6 +3972,8 @@
 
   .detail-panel {
     position: static;
+    max-height: none;
+    overflow: hidden;
   }
 
   .focus-overview-grid,

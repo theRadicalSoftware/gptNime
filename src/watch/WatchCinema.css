@@ -238,7 +238,7 @@ body.cinema-modal-open { overflow: hidden !important; }
 .card-watch-button { margin-right: auto; display: inline-flex; align-items: center; gap: 5px; color: #e5c17c; border: 1px solid #e5c17c35; border-radius: 7px; background: #e5c17c0a; padding: 5px 8px; font: inherit; font-size: 10px; cursor: pointer; }
 .card-actions { flex-wrap: wrap; }
 .card-actions .card-watch-button { flex: 1 0 100%; justify-content: center; padding: 7px 8px; }
-.detail-watch-button { width: 100%; justify-content: center; margin: 0 0 18px; }
+.detail-watch-button { width: 100%; justify-content: center; margin: 0; }
 .active-watch-actions { display: flex; gap: 6px; align-items: center; }
 .active-row { grid-template-columns: 58px minmax(0, 1fr) auto; }
 .card-actions .card-watch-button span { font-size: 10px; font-weight: 600; margin: 0; }

@@ -64,8 +64,8 @@ try {
   }
   const state = page => page.locator('video').evaluate(v => ({ time: v.currentTime, paused: v.paused, rate: v.playbackRate, volume: v.volume, muted: v.muted, src: v.src, duration: v.duration }))
   // Really play a share of the 120-second fixture, fast, so it counts as watched.
-  const watch = async (page, until) => {
-    await page.locator('video').evaluate(v => { v.playbackRate = 16 })
+  const watch = async (page, until, rate = 16) => {
+    await page.locator('video').evaluate((v, rate) => { v.playbackRate = rate }, rate)
     await page.waitForFunction(until => { const v = document.querySelector('video'); return v && v.currentTime >= until }, until, { timeout: 20_000 })
     await page.locator('video').evaluate(v => { v.playbackRate = 1 })
   }
@@ -84,7 +84,8 @@ try {
     await page.waitForFunction(() => document.querySelector('video')?.src.endsWith('-2'))
     console.log('✓ Moving on during the credits (Next or autoplay) marks the episode watched after half of it played')
 
-    await watch(page, 30)
+    // Slowly enough that a busy machine can't overshoot past half the episode.
+    await watch(page, 25, 4)
     await seek(page, 110)
     await page.waitForTimeout(400)
     await page.getByRole('button', { name: 'Next episode in cinema' }).click()

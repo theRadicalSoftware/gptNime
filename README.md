@@ -60,12 +60,13 @@ npm run test:cinema
 npm run test:wco
 npm run test:watch-recovery
 npm run test:watch-continuity
+npm run test:layout
 npm run test:storage
 npm run test:platform
 npm run test:wco-session # requires a desktop display
 ```
 
-Browser checks use installed Chrome (`/usr/bin/google-chrome`; override with `CHROME_PATH`). Run `CINEMA_HEADED=1 npm run test:cinema` on a desktop (or under `xvfb-run`) to also test native Document Picture-in-Picture and the fullscreen Skip hand-over. If another project holds a suite's port, set `WCO_TEST_PORT`, `VERSION_TEST_PORT`, `RECOVERY_TEST_PORT` or `CONTINUITY_TEST_PORT`. Tests start an isolated Vite server on port 5197, use fixture library data, and save screenshots under `output/cinema/`.
+Browser checks use installed Chrome (`/usr/bin/google-chrome`; override with `CHROME_PATH`). Run `CINEMA_HEADED=1 npm run test:cinema` on a desktop (or under `xvfb-run`) to also test native Document Picture-in-Picture and the fullscreen Skip hand-over. If another project holds a suite's port, set `WCO_TEST_PORT`, `VERSION_TEST_PORT`, `RECOVERY_TEST_PORT`, `CONTINUITY_TEST_PORT` or `LAYOUT_TEST_PORT`. Tests start an isolated Vite server on port 5197, use fixture library data, and save screenshots under `output/cinema/`.
 
 ## Data Storage
 

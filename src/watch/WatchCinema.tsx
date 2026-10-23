@@ -120,6 +120,11 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
   const closeRef = useRef(onClose)
   closeRef.current = onClose
   const entry = entries.find((item) => item.id === selection.id)
+  // Each title or episode opens with its screen in view, not wherever the desk was scrolled.
+  const workspaceRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (workspaceRef.current) workspaceRef.current.scrollTop = 0
+  }, [selection.id, selection.episode])
   const sessionRef = useRef({ entry, episode: selection.episode, layout, floating: false })
   sessionRef.current = { entry, episode: selection.episode, layout, floating: floating === 'live' }
   const lastRequest = useRef(request?.serial)
@@ -213,6 +218,19 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
       if (modal) { if (root) root.inert = wasInert; document.body.classList.remove('cinema-modal-open') }
       doc.removeEventListener('keydown', keyboard)
     }
+  }, [host, layout])
+
+  // The docked player sits over the page's corner. Publish its height so the
+  // page and the details panel leave room to scroll their ends clear of it.
+  useEffect(() => {
+    const root = document.documentElement
+    const dock = layout === 'dock' ? host.querySelector<HTMLElement>('.watch-cinema') : null
+    if (!dock || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => root.style.setProperty('--cinema-dock-space', `${Math.ceil(dock.getBoundingClientRect().height) + 34}px`))
+    observer.observe(dock)
+    // The dock replaces the cinema button, so its room isn't needed meanwhile.
+    root.style.setProperty('--cinema-button-space', '0px')
+    return () => { observer.disconnect(); root.style.removeProperty('--cinema-dock-space'); root.style.removeProperty('--cinema-button-space') }
   }, [host, layout])
 
   // The browser's own video Picture-in-Picture: a frameless, always-on-top
@@ -361,7 +379,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
           </div>
         </header>
         {windowError && <p className="cinema-message cinema-error" role="alert">{windowError}</p>}
-        <div className="cinema-workspace">
+        <div className="cinema-workspace" ref={workspaceRef}>
           <div className="cinema-main">
             {entry ? <EpisodePlayer key={`${entry.id}:${selection.episode}`} entry={entry} episode={selection.episode} intent={selection.intent} preparation={selection.preparation} onComplete={onComplete} story={story} reopen={reopen?.key === `${entry.id}:${selection.episode}` ? { kind: reopen.kind, run: () => { setReopen(null); if (reopen.kind === 'window') void popOut(); else void floatVideo() }, dismiss: () => setReopen(null) } : undefined} onEpisode={(episode, preparation) => setSelection((previous) => ({ id: entry.id, episode, preparation, intent: previous.intent + 1 }))} onRevealSource={() => { if (layout === 'dock') setLayout('cinema') }} onDetails={() => { if (layout !== 'window') setLayout('dock'); onDetails(entry.id) }} /> : <div className="cinema-empty"><Film size={38} /><h3>{entries.length ? 'Choose your next watch' : 'Your cinema starts here'}</h3><p>{entries.length ? 'Pick a title from your library to open its watch desk.' : 'Add a show or movie to your library, then press Watch.'}</p>{!entries.length && <button className="cinema-button primary" onClick={onClose}>Back to gptNime</button>}</div>}
           </div>

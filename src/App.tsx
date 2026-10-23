@@ -1,4 +1,4 @@
-import type { ChangeEvent, CSSProperties } from 'react'
+import type { ChangeEvent, CSSProperties, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
@@ -29,6 +29,7 @@ import {
   Search,
   ShieldAlert,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Sprout,
   Star,
@@ -1771,6 +1772,25 @@ function App() {
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(initialNotificationPreferences)
   const [view, setView] = useState<ViewName>('dashboard')
   const [selectedId, setSelectedId] = useState<string | null>(initialState.library[0]?.id || null)
+  // Each page opens at its top, like following a link. A title opened from
+  // another page is shown in the library with its details in view.
+  // The top bar gains a backdrop once content scrolls beneath it.
+  const [pageScrolled, setPageScrolled] = useState(false)
+  useEffect(() => {
+    const update = () => setPageScrolled(window.scrollY > 8)
+    update()
+    window.addEventListener('scroll', update, { passive: true })
+    return () => window.removeEventListener('scroll', update)
+  }, [])
+  const viewSelection = useRef({ view, selectedId })
+  const revealDetails = useRef(false)
+  useEffect(() => {
+    const previous = viewSelection.current
+    viewSelection.current = { view, selectedId }
+    if (previous.view === view) return
+    window.scrollTo(0, 0)
+    revealDetails.current = view === 'library' && previous.selectedId !== selectedId
+  }, [view, selectedId])
   const [searchTerm, setSearchTerm] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
@@ -2913,7 +2933,7 @@ function App() {
       </aside>
 
       <main className="main-stage">
-        <header className="topbar">
+        <header className={pageScrolled ? 'topbar topbar-scrolled' : 'topbar'}>
           <div className="search-panel">
             <Search size={18} />
             <input
@@ -3118,6 +3138,7 @@ function App() {
                 entries={filteredLibrary}
                 allCount={library.length}
                 selectedEntry={selectedEntry}
+                revealDetails={revealDetails}
                 selectedGroup={selectedGroup}
                 libraryQuery={libraryQuery}
                 setLibraryQuery={setLibraryQuery}
@@ -3863,22 +3884,6 @@ function Dashboard({
         </div>
       </section>
 
-      <section className="metric-grid">
-        <MetricTile label="Titles" value={stats.total.toString()} icon={LibraryBig} />
-        <MetricTile label="Watching" value={stats.watching.toString()} icon={Play} />
-        <MetricTile label="Completed" value={stats.completed.toString()} icon={Check} />
-        <MetricTile label="Episodes" value={stats.episodesWatched.toString()} icon={Eye} />
-      </section>
-
-      <FanStatsPanel stats={fanStats} />
-
-      <SmartShelvesPanel
-        shelves={smartShelves}
-        setSelectedId={setSelectedId}
-        setView={setView}
-        addFromSearch={addFromSearch}
-      />
-
       <section className="dashboard-grid">
         <div className="panel wide-panel">
           <div className="section-heading">
@@ -3896,9 +3901,11 @@ function Dashboard({
             <div className="active-list">
               {continueEntries.map((entry) => (
                 <article className="active-row" key={entry.id}>
-                  <img src={entry.coverImage || artPanels[2]} alt={`${entry.title} cover`} />
+                  <button className="active-row-cover" type="button" title={`Open ${entry.title}`} onClick={() => { setSelectedId(entry.id); setView('library') }}>
+                    <img src={entry.coverImage || artPanels[2]} alt={`${entry.title} cover`} />
+                  </button>
                   <div>
-                    <h3>{entry.title}</h3>
+                    <h3><button className="active-row-title" type="button" onClick={() => { setSelectedId(entry.id); setView('library') }}>{entry.title}</button></h3>
                     <p>
                       Next ep {entry.progress + 1}
                       {entry.episodesTotal ? ` / ${entry.episodesTotal}` : ''}
@@ -3992,6 +3999,23 @@ function Dashboard({
 	          )}
 	        </div>
 	      </section>
+
+      {/* What to watch comes first; the numbers about it follow. */}
+      <SmartShelvesPanel
+        shelves={smartShelves}
+        setSelectedId={setSelectedId}
+        setView={setView}
+        addFromSearch={addFromSearch}
+      />
+
+      <section className="metric-grid">
+        <MetricTile label="Titles" value={stats.total.toString()} icon={LibraryBig} />
+        <MetricTile label="Watching" value={stats.watching.toString()} icon={Play} />
+        <MetricTile label="Completed" value={stats.completed.toString()} icon={Check} />
+        <MetricTile label="Episodes" value={stats.episodesWatched.toString()} icon={Eye} />
+      </section>
+
+      <FanStatsPanel stats={fanStats} />
 
 	      <section className="dashboard-grid dashboard-grid-secondary">
 	        <StaleWatchPanel
@@ -5120,6 +5144,7 @@ function LibraryView({
   entries,
   allCount,
   selectedEntry,
+  revealDetails,
   selectedGroup,
   libraryQuery,
   setLibraryQuery,
@@ -5153,6 +5178,8 @@ function LibraryView({
   entries: LibraryGroup[]
   allCount: number
   selectedEntry: AnimeEntry | null
+  // Set when a title was opened from another page; the library brings its details into view.
+  revealDetails: { current: boolean }
   selectedGroup: LibraryGroup | null
   libraryQuery: string
   setLibraryQuery: (value: string) => void
@@ -5188,6 +5215,26 @@ function LibraryView({
   useEffect(() => {
     setDraftNotes(selectedEntry?.notes || '')
   }, [selectedEntry?.id, selectedEntry?.notes])
+
+  // A newly chosen title opens at the top of its details. On a wide screen the
+  // panel scrolls by itself beside the grid, so your place in the grid stays;
+  // stacked on a narrow screen, the page moves to the details instead.
+  const detailPanelRef = useRef<HTMLElement>(null)
+  const shownEntryId = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const panel = detailPanelRef.current
+    const opened = shownEntryId.current === undefined
+    if (!panel || shownEntryId.current === selectedEntry?.id) return
+    shownEntryId.current = selectedEntry?.id
+    panel.scrollTop = 0
+    if (opened && !revealDetails.current) return
+    revealDetails.current = false
+    const top = panel.getBoundingClientRect().top
+    if (getComputedStyle(panel).position !== 'sticky' && (top < 0 || top > window.innerHeight * 0.4)) {
+      const smooth = !opened && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      panel.scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' })
+    }
+  }, [selectedEntry?.id, revealDetails])
 
   const detailLoading = selectedEntry ? detailLoadingId === selectedEntry.id : false
   const selectedEpisodes = selectedEntry ? episodeRowsFor(selectedEntry) : []
@@ -5257,7 +5304,7 @@ function LibraryView({
           )}
         </div>
 
-        <aside className="detail-panel">
+        <aside className="detail-panel" ref={detailPanelRef}>
           {selectedEntry ? (
             <>
               <div
@@ -5333,6 +5380,13 @@ function LibraryView({
                   </section>
                 )}
 
+                {selectedEntry.description && <Synopsis key={selectedEntry.id} text={selectedEntry.description} />}
+                <div className="tag-row">
+                  {selectedEntry.genres.slice(0, 6).map((genre) => (
+                    <span key={genre}>{genre}</span>
+                  ))}
+                </div>
+
 	                <div className="detail-controls">
 	                  <label>
                     <span>Status</span>
@@ -5362,16 +5416,6 @@ function LibraryView({
 	                  </label>
 	                </div>
 
-                <EntryProfileControls
-                  entry={selectedEntry}
-                  group={selectedGroup}
-                  changeRating={changeRating}
-                  toggleFavorite={toggleFavorite}
-                  toggleRewatchWorthy={toggleRewatchWorthy}
-                  changePriority={changePriority}
-                  saveDroppedReason={saveDroppedReason}
-                />
-
                 <div className="episode-editor">
                   <button
                     className="icon-button"
@@ -5399,16 +5443,6 @@ function LibraryView({
                   </button>
                 </div>
 
-                <EpisodeMemoryPanel entry={selectedEntry} saveEpisodeMemo={saveEpisodeMemo} />
-
-                <EpisodeJumpControl entry={selectedEntry} changeProgress={changeProgress} />
-                <BulkEpisodeTools
-                  entry={selectedEntry}
-                  changeProgress={changeProgress}
-                  undoProgress={undoProgress}
-                  canUndo={lastProgressChange?.entryId === selectedEntry.id}
-                />
-
                 <button
                   className="mark-watched-button"
                   type="button"
@@ -5424,65 +5458,15 @@ function LibraryView({
                   </span>
                 </button>
 
-                <div className="rewatch-actions">
-                  <button
-                    className="rewatch-action-button"
-                    type="button"
-                    onClick={() => setRewatchStatus(selectedEntry, 'planned')}
-                    disabled={selectedEntry.rewatchStatus === 'planned'}
-                  >
-                    <RefreshCcw size={16} />
-                    <span>{selectedEntry.rewatchStatus === 'planned' ? 'Rewatch planned' : 'Plan rewatch'}</span>
-                  </button>
-                  <button
-                    className="rewatch-action-button strong"
-                    type="button"
-                    onClick={() => setRewatchStatus(selectedEntry, 'rewatching')}
-                    disabled={selectedEntry.rewatchStatus === 'rewatching'}
-                  >
-                    <Play size={16} />
-                    <span>{selectedEntry.rewatchStatus === 'rewatching' ? 'Rewatching now' : 'Start rewatch'}</span>
-                  </button>
-                  {isRewatchQueued(selectedEntry) && (
-                    <button className="rewatch-action-button subtle" type="button" onClick={() => clearRewatchStatus(selectedEntry)}>
-                      <Trash2 size={16} />
-                      <span>Clear rewatch</span>
-                    </button>
-                  )}
-                </div>
-
-                {(detailLoading || detailError) && (
-                  <div className={detailError ? 'detail-load detail-load-error' : 'detail-load'}>
-                    {detailLoading ? <Loader2 className="spin" size={16} /> : <Info size={16} />}
-                    <span>{detailError || 'Loading full anime details and episode data...'}</span>
+                {selectedEntry.nextAiringEpisode && (
+                  <div className="airing-card">
+                    <CalendarDays size={18} />
+                    <div>
+                      <span>Episode {selectedEntry.nextAiringEpisode.episode}</span>
+                      <strong>{formatDate(selectedEntry.nextAiringEpisode.airingAt)}</strong>
+                    </div>
                   </div>
                 )}
-
-                <section className="info-section">
-                  <div className="info-section-title">
-                    <Info size={17} />
-                    <h3>Series details</h3>
-                  </div>
-                  <div className="fact-grid">
-                    <Fact label="Episodes" value={selectedEntry.episodesTotal ? selectedEntry.episodesTotal.toString() : 'Unknown'} />
-                    <Fact label="Duration" value={selectedEntry.duration ? `${selectedEntry.duration} min` : '-'} />
-                    <Fact label="Season" value={formatSeason(selectedEntry)} />
-                    <Fact label="Score" value={selectedEntry.averageScore ? `${selectedEntry.averageScore}%` : '-'} />
-                    <Fact label="Mean" value={selectedEntry.meanScore ? `${selectedEntry.meanScore}%` : '-'} />
-                    <Fact label="Popularity" value={formatNumber(selectedEntry.popularity)} />
-                    <Fact label="Source" value={selectedEntry.source || '-'} />
-                    <Fact label="Country" value={selectedEntry.countryOfOrigin || '-'} />
-                  </div>
-                  {selectedEntry.rankings?.length ? (
-                    <div className="ranking-row">
-                      {selectedEntry.rankings.slice(0, 3).map((ranking) => (
-                        <span key={`${ranking.type}-${ranking.rank}-${ranking.context}`}>
-                          #{ranking.rank} {ranking.context || ranking.type?.toLowerCase()}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                </section>
 
                 <section className="info-section">
                   <div className="info-section-title">
@@ -5523,154 +5507,218 @@ function LibraryView({
                   )}
                 </section>
 
-                {selectedEntry.nextAiringEpisode && (
-                  <div className="airing-card">
-                    <CalendarDays size={18} />
-                    <div>
-                      <span>Episode {selectedEntry.nextAiringEpisode.episode}</span>
-                      <strong>{formatDate(selectedEntry.nextAiringEpisode.airingAt)}</strong>
-                    </div>
+                {(detailLoading || detailError) && (
+                  <div className={detailError ? 'detail-load detail-load-error' : 'detail-load'}>
+                    {detailLoading ? <Loader2 className="spin" size={16} /> : <Info size={16} />}
+                    <span>{detailError || 'Loading full anime details and episode data...'}</span>
                   </div>
                 )}
 
-                <div className="tag-row">
-                  {selectedEntry.genres.slice(0, 6).map((genre) => (
-                    <span key={genre}>{genre}</span>
-                  ))}
-                </div>
-
-                {selectedEntry.studios.length ? (
-                  <section className="info-section">
-                    <div className="info-section-title">
-                      <Archive size={17} />
-                      <h3>Studios</h3>
-                    </div>
-                    <div className="chip-list">
-                      {selectedEntry.studios.map((studio) => (
-                        <span key={studio}>{studio}</span>
-                      ))}
-                    </div>
-                  </section>
-                ) : null}
-
-                {selectedEntry.staff?.length ? (
-                  <section className="info-section">
-                    <div className="info-section-title">
-                      <Users size={17} />
-                      <h3>Staff and production</h3>
-                    </div>
-                    <div className="credit-list">
-                      {selectedEntry.staff.map((credit) => (
-                        <a className="credit-row" href={credit.siteUrl || '#'} key={`${credit.id}-${credit.role}`} target="_blank" rel="noreferrer">
-                          {credit.image && <img src={credit.image} alt="" />}
-                          <span>
-                            <strong>{credit.name}</strong>
-                            <em>{credit.role || credit.occupations?.slice(0, 2).join(', ') || 'Staff'}</em>
-                          </span>
-                        </a>
-                      ))}
-                    </div>
-                  </section>
-                ) : null}
-
-                {selectedEntry.characters?.length ? (
-                  <section className="info-section">
-                    <div className="info-section-title">
-                      <Users size={17} />
-                      <h3>Characters and voices</h3>
-                    </div>
-                    <div className="credit-list">
-                      {selectedEntry.characters.map((credit) => (
-                        <a className="credit-row" href={credit.siteUrl || '#'} key={`${credit.id}-${credit.role}`} target="_blank" rel="noreferrer">
-                          {credit.image && <img src={credit.image} alt="" />}
-                          <span>
-                            <strong>{credit.name}</strong>
-                            <em>
-                              {[credit.role, credit.voiceActor ? `VA: ${credit.voiceActor.name}` : ''].filter(Boolean).join(' - ')}
-                            </em>
-                          </span>
-                        </a>
-                      ))}
-                    </div>
-                  </section>
-                ) : null}
-
-                {selectedEntry.relations?.length ? (
-                  <section className="info-section">
-                    <div className="info-section-title">
-                      <LibraryBig size={17} />
-                      <h3>Related seasons</h3>
-                    </div>
-                    <div className="relation-list">
-                      {selectedEntry.relations.slice(0, 8).map((relation) => (
-                        <article className="relation-card" key={`${relation.anilistId}-${relation.relationType}`}>
-                          {relation.coverImage && <img src={relation.coverImage} alt="" />}
-                          <span>
-                            <strong>{relation.title}</strong>
-                            <em>{[relation.relationType, relation.format, relation.seasonYear].filter(Boolean).join(' - ')}</em>
-                          </span>
-                        </article>
-                      ))}
-                    </div>
-                  </section>
-                ) : null}
-
-                {selectedEntry.tags?.length ? (
-                  <section className="info-section">
-                    <div className="info-section-title">
-                      <Sparkles size={17} />
-                      <h3>Tags</h3>
-                    </div>
-                    <div className="chip-list">
-                      {selectedEntry.tags.slice(0, 14).map((tag) => (
-                        <span key={tag.name}>{tag.name}</span>
-                      ))}
-                    </div>
-                  </section>
-                ) : null}
-
-                {selectedEntry.externalLinks?.length || selectedEntry.siteUrl ? (
-                  <section className="info-section">
-                    <div className="info-section-title">
-                      <Link size={17} />
-                      <h3>Links</h3>
-                    </div>
-                    <div className="link-list">
-                      {selectedEntry.siteUrl && (
-                        <a href={selectedEntry.siteUrl} target="_blank" rel="noreferrer">
-                          AniList
-                        </a>
-                      )}
-                      {selectedEntry.externalLinks?.slice(0, 8).map((link) => (
-                        <a href={link.url} key={`${link.site}-${link.url}`} target="_blank" rel="noreferrer">
-                          {link.site}
-                        </a>
-                      ))}
-                    </div>
-                  </section>
-                ) : null}
-
-                {selectedEntry.description && <p className="synopsis">{selectedEntry.description}</p>}
-
-                <div className="notes-box">
-                  <div className="notes-box-heading">
-                    <span>Notes</span>
-                    <Sparkles size={15} />
-                  </div>
-                  <div className="note-template-row" aria-label="Note templates">
-                    {noteTemplates.map((template) => (
-                      <button key={template.label} type="button" onClick={() => applyNoteTemplate(template.value)}>
-                        {template.label}
-                      </button>
-                    ))}
-                  </div>
-                  <textarea
-                    value={draftNotes}
-                    onChange={(event) => setDraftNotes(event.target.value)}
-                    onBlur={() => saveNotes(selectedEntry, draftNotes)}
-                    rows={5}
+                <DetailDrawer id="profile" icon={Star} title="Profile and notes" hint={[selectedEntry.favorite ? 'Favorite' : '', selectedEntry.priority === 'high' ? 'High priority' : '', selectedEntry.notes.trim() ? 'Has notes' : ''].filter(Boolean).join(' · ') || 'Favorite, priority, recap and notes'}>
+                  <EntryProfileControls
+                    entry={selectedEntry}
+                    group={selectedGroup}
+                    changeRating={changeRating}
+                    toggleFavorite={toggleFavorite}
+                    toggleRewatchWorthy={toggleRewatchWorthy}
+                    changePriority={changePriority}
+                    saveDroppedReason={saveDroppedReason}
                   />
-                </div>
+                  <EpisodeMemoryPanel entry={selectedEntry} saveEpisodeMemo={saveEpisodeMemo} />
+                  <div className="notes-box">
+                    <div className="notes-box-heading">
+                      <span>Notes</span>
+                      <Sparkles size={15} />
+                    </div>
+                    <div className="note-template-row" aria-label="Note templates">
+                      {noteTemplates.map((template) => (
+                        <button key={template.label} type="button" onClick={() => applyNoteTemplate(template.value)}>
+                          {template.label}
+                        </button>
+                      ))}
+                    </div>
+                    <textarea
+                      value={draftNotes}
+                      onChange={(event) => setDraftNotes(event.target.value)}
+                      onBlur={() => saveNotes(selectedEntry, draftNotes)}
+                      rows={5}
+                    />
+                  </div>
+                </DetailDrawer>
+
+                <DetailDrawer id="tracking" icon={SlidersHorizontal} title="Tracking tools" hint="Jump to an episode, mark a range, plan a rewatch">
+                  <EpisodeJumpControl entry={selectedEntry} changeProgress={changeProgress} />
+                  <BulkEpisodeTools
+                    entry={selectedEntry}
+                    changeProgress={changeProgress}
+                    undoProgress={undoProgress}
+                    canUndo={lastProgressChange?.entryId === selectedEntry.id}
+                  />
+                  <div className="rewatch-actions">
+                    <button
+                      className="rewatch-action-button"
+                      type="button"
+                      onClick={() => setRewatchStatus(selectedEntry, 'planned')}
+                      disabled={selectedEntry.rewatchStatus === 'planned'}
+                    >
+                      <RefreshCcw size={16} />
+                      <span>{selectedEntry.rewatchStatus === 'planned' ? 'Rewatch planned' : 'Plan rewatch'}</span>
+                    </button>
+                    <button
+                      className="rewatch-action-button strong"
+                      type="button"
+                      onClick={() => setRewatchStatus(selectedEntry, 'rewatching')}
+                      disabled={selectedEntry.rewatchStatus === 'rewatching'}
+                    >
+                      <Play size={16} />
+                      <span>{selectedEntry.rewatchStatus === 'rewatching' ? 'Rewatching now' : 'Start rewatch'}</span>
+                    </button>
+                    {isRewatchQueued(selectedEntry) && (
+                      <button className="rewatch-action-button subtle" type="button" onClick={() => clearRewatchStatus(selectedEntry)}>
+                        <Trash2 size={16} />
+                        <span>Clear rewatch</span>
+                      </button>
+                    )}
+                  </div>
+                </DetailDrawer>
+
+                <DetailDrawer id="about" icon={Info} title="About the series" hint={[selectedEntry.studios[0], selectedEntry.duration ? `${selectedEntry.duration} min episodes` : '', selectedEntry.relations?.length ? `${selectedEntry.relations.length} related` : ''].filter(Boolean).join(' · ') || 'Details, studios, tags and links'}>
+                  <section className="info-section">
+                    <div className="info-section-title">
+                      <Info size={17} />
+                      <h3>Series details</h3>
+                    </div>
+                    <div className="fact-grid">
+                      <Fact label="Episodes" value={selectedEntry.episodesTotal ? selectedEntry.episodesTotal.toString() : 'Unknown'} />
+                      <Fact label="Duration" value={selectedEntry.duration ? `${selectedEntry.duration} min` : '-'} />
+                      <Fact label="Season" value={formatSeason(selectedEntry)} />
+                      <Fact label="Score" value={selectedEntry.averageScore ? `${selectedEntry.averageScore}%` : '-'} />
+                      <Fact label="Mean" value={selectedEntry.meanScore ? `${selectedEntry.meanScore}%` : '-'} />
+                      <Fact label="Popularity" value={formatNumber(selectedEntry.popularity)} />
+                      <Fact label="Source" value={selectedEntry.source || '-'} />
+                      <Fact label="Country" value={selectedEntry.countryOfOrigin || '-'} />
+                    </div>
+                    {selectedEntry.rankings?.length ? (
+                      <div className="ranking-row">
+                        {selectedEntry.rankings.slice(0, 3).map((ranking) => (
+                          <span key={`${ranking.type}-${ranking.rank}-${ranking.context}`}>
+                            #{ranking.rank} {ranking.context || ranking.type?.toLowerCase()}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </section>
+                  {selectedEntry.relations?.length ? (
+                    <section className="info-section">
+                      <div className="info-section-title">
+                        <LibraryBig size={17} />
+                        <h3>Related seasons</h3>
+                      </div>
+                      <div className="relation-list">
+                        {selectedEntry.relations.slice(0, 8).map((relation) => (
+                          <article className="relation-card" key={`${relation.anilistId}-${relation.relationType}`}>
+                            {relation.coverImage && <img src={relation.coverImage} alt="" />}
+                            <span>
+                              <strong>{relation.title}</strong>
+                              <em>{[relation.relationType, relation.format, relation.seasonYear].filter(Boolean).join(' - ')}</em>
+                            </span>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                  {selectedEntry.studios.length ? (
+                    <section className="info-section">
+                      <div className="info-section-title">
+                        <Archive size={17} />
+                        <h3>Studios</h3>
+                      </div>
+                      <div className="chip-list">
+                        {selectedEntry.studios.map((studio) => (
+                          <span key={studio}>{studio}</span>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                  {selectedEntry.tags?.length ? (
+                    <section className="info-section">
+                      <div className="info-section-title">
+                        <Sparkles size={17} />
+                        <h3>Tags</h3>
+                      </div>
+                      <div className="chip-list">
+                        {selectedEntry.tags.slice(0, 14).map((tag) => (
+                          <span key={tag.name}>{tag.name}</span>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                  {selectedEntry.externalLinks?.length || selectedEntry.siteUrl ? (
+                    <section className="info-section">
+                      <div className="info-section-title">
+                        <Link size={17} />
+                        <h3>Links</h3>
+                      </div>
+                      <div className="link-list">
+                        {selectedEntry.siteUrl && (
+                          <a href={selectedEntry.siteUrl} target="_blank" rel="noreferrer">
+                            AniList
+                          </a>
+                        )}
+                        {selectedEntry.externalLinks?.slice(0, 8).map((link) => (
+                          <a href={link.url} key={`${link.site}-${link.url}`} target="_blank" rel="noreferrer">
+                            {link.site}
+                          </a>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                </DetailDrawer>
+
+                {selectedEntry.staff?.length || selectedEntry.characters?.length ? (
+                  <DetailDrawer id="cast" icon={Users} title="Cast and staff" hint={[selectedEntry.characters?.length ? `${selectedEntry.characters.length} characters` : '', selectedEntry.staff?.length ? `${selectedEntry.staff.length} staff` : ''].filter(Boolean).join(' · ')}>
+                    {selectedEntry.characters?.length ? (
+                      <section className="info-section">
+                        <div className="info-section-title">
+                          <Users size={17} />
+                          <h3>Characters and voices</h3>
+                        </div>
+                        <div className="credit-list">
+                          {selectedEntry.characters.map((credit) => (
+                            <a className="credit-row" href={credit.siteUrl || '#'} key={`${credit.id}-${credit.role}`} target="_blank" rel="noreferrer">
+                              {credit.image && <img src={credit.image} alt="" />}
+                              <span>
+                                <strong>{credit.name}</strong>
+                                <em>
+                                  {[credit.role, credit.voiceActor ? `VA: ${credit.voiceActor.name}` : ''].filter(Boolean).join(' - ')}
+                                </em>
+                              </span>
+                            </a>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null}
+                    {selectedEntry.staff?.length ? (
+                      <section className="info-section">
+                        <div className="info-section-title">
+                          <Users size={17} />
+                          <h3>Staff and production</h3>
+                        </div>
+                        <div className="credit-list">
+                          {selectedEntry.staff.map((credit) => (
+                            <a className="credit-row" href={credit.siteUrl || '#'} key={`${credit.id}-${credit.role}`} target="_blank" rel="noreferrer">
+                              {credit.image && <img src={credit.image} alt="" />}
+                              <span>
+                                <strong>{credit.name}</strong>
+                                <em>{credit.role || credit.occupations?.slice(0, 2).join(', ') || 'Staff'}</em>
+                              </span>
+                            </a>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null}
+                  </DetailDrawer>
+                ) : null}
 
                 <div className="detail-footer">
                   <span>Added {formatShortDate(selectedEntry.addedAt)}</span>
@@ -5687,6 +5735,70 @@ function LibraryView({
         </aside>
       </section>
     </>
+  )
+}
+
+// Fold-away sections of the details panel. Each remembers whether you left it
+// open, in this browser only.
+const DETAIL_DRAWERS_KEY = 'gptnime-detail-drawers-v1'
+
+function readDetailDrawers(): Record<string, boolean> {
+  try {
+    const value = JSON.parse(localStorage.getItem(DETAIL_DRAWERS_KEY) || '{}')
+    return value && typeof value === 'object' ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+function DetailDrawer({ id, icon: Icon, title, hint, children }: { id: string; icon: typeof Info; title: string; hint?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(() => readDetailDrawers()[id] === true)
+  return (
+    <details
+      className="detail-drawer"
+      open={open}
+      onToggle={(event) => {
+        const next = event.currentTarget.open
+        if (next === open) return
+        setOpen(next)
+        try {
+          localStorage.setItem(DETAIL_DRAWERS_KEY, JSON.stringify({ ...readDetailDrawers(), [id]: next }))
+        } catch {
+          // Without storage the section simply starts closed next time.
+        }
+      }}
+    >
+      <summary>
+        <Icon size={16} />
+        <span>
+          <strong>{title}</strong>
+          {hint && <em>{hint}</em>}
+        </span>
+        <ChevronDown className="detail-drawer-chevron" size={16} />
+      </summary>
+      {open && <div className="detail-drawer-body">{children}</div>}
+    </details>
+  )
+}
+
+// The synopsis reads as a short paragraph first, with the rest one click away.
+function Synopsis({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [clamped, setClamped] = useState(false)
+  const ref = useRef<HTMLParagraphElement>(null)
+  useEffect(() => {
+    const element = ref.current
+    if (element) setClamped(element.scrollHeight > element.clientHeight + 2)
+  }, [text])
+  return (
+    <div className="synopsis-block">
+      <p ref={ref} className={expanded ? 'synopsis synopsis-expanded' : 'synopsis'}>{text}</p>
+      {(clamped || expanded) && (
+        <button className="synopsis-toggle" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+          {expanded ? 'Show less' : 'Read more'}
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -5718,15 +5830,9 @@ function AnimeCard({
           {statusMeta[group.status].short}
         </span>
         {group.entries.length > 1 && (
-          <span className="season-count-pill">
-            <LibraryBig size={13} />
+          <span className={completeRun ? 'season-count-pill season-count-pill-complete' : 'season-count-pill'} title={completeRun ? 'Every season watched' : undefined}>
+            {completeRun ? <Check size={13} /> : <LibraryBig size={13} />}
             {group.entries.length} seasons
-          </span>
-        )}
-        {completeRun && (
-          <span className="complete-run-stamp">
-            <Check size={13} />
-            Complete run
           </span>
         )}
         {isGroupRewatchQueued(group) && (
@@ -5735,20 +5841,13 @@ function AnimeCard({
             {rewatchMeta[group.rewatchStatus as Exclude<RewatchStatus, 'none'>].short}
           </span>
         )}
-        {group.entries.length > 1 && (
-          <span className="season-cover-stack" aria-hidden="true">
-            {group.entries.slice(0, 3).map((entry) => (
-              <img src={entry.coverImage || artPanels[2]} alt="" key={entry.id} />
-            ))}
-          </span>
-        )}
       </button>
       <div className="card-copy">
         <h3>{group.title}</h3>
-        <p>{progressLabel}</p>
-        {group.entries.length > 1 && (
-          <p className="series-card-meta">Active: {seasonLabelFor(group.active, group, activeSeasonIndex)}</p>
-        )}
+        <p className="card-meta">
+          <span>{progressLabel}</span>
+          {group.entries.length > 1 && <span className="series-card-meta" title={`Now on ${seasonLabelFor(group.active, group, activeSeasonIndex)}`}>{seasonLabelFor(group.active, group, activeSeasonIndex)}</span>}
+        </p>
         <ProgressTrack
           entry={group.active}
           progress={group.progress}
@@ -5765,7 +5864,7 @@ function AnimeCard({
             <ChevronLeft size={15} />
           </button>
           <button
-            className="mini-icon-button strong"
+            className="mini-icon-button"
             type="button"
             title="Next episode"
             onClick={() => changeProgress(group.active, group.active.progress + 1)}
