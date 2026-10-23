@@ -15,7 +15,10 @@ export type WatchTitle = {
   externalLinks?: { site: string; url: string; type?: string | null }[]
 }
 
-export type WatchRequest = { id: string; episode?: number; serial: number }
+export type PlaybackPosition = { time: number; paused: boolean; rate: number; volume: number; muted: boolean }
+export type CinemaLayout = 'cinema' | 'dock' | 'window' | 'float'
+// `resume` brings back the moment a refresh interrupted (see readCinemaSession).
+export type WatchRequest = { id: string; episode?: number; serial: number; resume?: { position: PlaybackPosition; layout: CinemaLayout } }
 export type Language = 'sub' | 'dub'
 // A phone or tablet reaches GPTNime through an SSH tunnel to this computer.
 // WCO's signed links belong to the computer's browser, so a phone plays them
@@ -146,4 +149,36 @@ export function writeWatchState(state: WatchState): boolean {
     localStorage.setItem(WATCH_STORAGE_KEY, JSON.stringify({ ...state, bookmarks }))
     return true
   } catch { return false }
+}
+
+// The episode on screen when this tab last unloaded, kept in sessionStorage so
+// a refresh brings it back while a new tab or a closed cinema starts fresh.
+export type CinemaSession = { anilistId: number; episode: number; position: PlaybackPosition; layout: CinemaLayout; savedAt: number }
+const CINEMA_SESSION_KEY = 'gptnime-cinema-session-v1'
+const CINEMA_SESSION_LIFETIME = 30 * 60_000
+
+export function readCinemaSession(): CinemaSession | null {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(CINEMA_SESSION_KEY) || 'null')
+    const position = raw?.position
+    if (!raw || !Number.isInteger(raw.anilistId) || raw.anilistId <= 0 || !Number.isInteger(raw.episode) || raw.episode <= 0 || raw.episode > 100_000) return null
+    if (!Number.isFinite(raw.savedAt) || raw.savedAt > Date.now() || Date.now() - raw.savedAt > CINEMA_SESSION_LIFETIME) return null
+    if (!position || !Number.isFinite(position.time) || position.time < 0 || !Number.isFinite(position.rate) || position.rate < 0.25 || position.rate > 4 || !Number.isFinite(position.volume) || position.volume < 0 || position.volume > 1) return null
+    const layout: CinemaLayout = ['cinema', 'dock', 'window', 'float'].includes(raw.layout) ? raw.layout : 'cinema'
+    return { anilistId: raw.anilistId, episode: raw.episode, layout, savedAt: raw.savedAt, position: { time: position.time, paused: position.paused === true, rate: position.rate, volume: position.volume, muted: position.muted === true } }
+  } catch { return null }
+}
+
+export function writeCinemaSession(session: CinemaSession | null) {
+  try {
+    if (session) sessionStorage.setItem(CINEMA_SESSION_KEY, JSON.stringify(session))
+    else sessionStorage.removeItem(CINEMA_SESSION_KEY)
+  } catch { /* A refresh then opens the dashboard as before. */ }
+}
+
+// Whether this episode was played in the cinema, which makes the next one a
+// continuation even if marking it watched was missed.
+export function playedInCinema(anilistId: number, episode: number) {
+  const prefix = `${anilistId}:${episode}:`
+  return Object.keys(readWatchState().bookmarks).some((key) => key.startsWith(prefix))
 }

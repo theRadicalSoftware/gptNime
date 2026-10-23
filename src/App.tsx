@@ -40,7 +40,7 @@ import {
 import './App.css'
 import WatchCinema from './watch/WatchCinema'
 import type { WatchRequest } from './watch/watchState'
-import { firstEpisode } from './watch/watchState'
+import { firstEpisode, readCinemaSession, writeCinemaSession } from './watch/watchState'
 import { scheduleEpisodePreparation, useWatchPreparation } from './watch/watchPreparation'
 import type {
   AniListMedia,
@@ -2191,6 +2191,27 @@ function App() {
     setNotificationDrawerOpen(false)
     setEndCard(null)
   }, [])
+
+  // A refresh during an episode reopens the cinema at the same moment. Only this
+  // tab remembers it, and only for half an hour; closing the cinema forgets it.
+  const cinemaRestored = useRef(false)
+  useEffect(() => {
+    if (cinemaRestored.current || !library.length) return
+    cinemaRestored.current = true
+    const session = readCinemaSession()
+    const entry = session && library.find((item) => item.anilistId === session.anilistId)
+    // The library may have changed since: only an episode the title still has.
+    if (!session || !entry || (entry.episodesTotal && session.episode > entry.episodesTotal) || (entry.format === 'MOVIE' && session.episode !== 1)) return
+    setWatchRequest((current) => ({ id: entry.id, episode: session.episode, serial: (current?.serial || 0) + 1, resume: { position: session.position, layout: session.layout } }))
+    setAnimeChannelOpen(true)
+  }, [library])
+
+  // Closing the cinema means a refresh should not bring it back.
+  const cinemaWasOpen = useRef(false)
+  useEffect(() => {
+    if (animeChannelOpen) cinemaWasOpen.current = true
+    else if (cinemaWasOpen.current) { cinemaWasOpen.current = false; writeCinemaSession(null) }
+  }, [animeChannelOpen])
 
   const cinemaEntries = useMemo(() => {
     const queued = new Set(animeChannelEntries.map((entry) => entry.id))

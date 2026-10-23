@@ -124,6 +124,18 @@ body.cinema-modal-open { overflow: hidden !important; }
 @keyframes cinema-recovery-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 @keyframes cinema-recovery-out { to { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .cinema-recovery, .cinema-recovery.is-back { animation: none; } }
+.cinema-resume { position: absolute; inset: 0 0 56px; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; background: radial-gradient(ellipse at center, #0b0d10b8 0%, #0b0d1060 42%, transparent 72%); pointer-events: none; animation: cinema-recovery-in .24s ease-out both; }
+.cinema-resume button { pointer-events: auto; cursor: pointer; font: inherit; }
+.cinema-resume-play { display: inline-flex; align-items: center; gap: 10px; min-height: 46px; max-width: 100%; padding: 12px 22px; border: 1px solid var(--cinema-gold); border-radius: 10px; background: var(--cinema-gold); color: #221d15; font-size: 14px !important; font-weight: 600 !important; font-variant-numeric: tabular-nums; box-shadow: 0 10px 34px #000a; transition: transform .15s ease, filter .15s ease; }
+.cinema-resume-play:hover { transform: translateY(-1px); filter: brightness(1.06); }
+.cinema-resume-here { padding: 8px 14px; border: 1px solid #ffffff26; border-radius: 8px; background: #0b0d10cc; color: #e8e2d6; font-size: 12px !important; backdrop-filter: blur(6px); }
+.cinema-resume-here:hover { border-color: #ffffff4d; }
+.cinema-resume button:focus-visible { outline: 2px solid #f4eee3; outline-offset: 3px; }
+.cinema-layout-dock .cinema-resume { inset: 0 0 44px; gap: 6px; }
+.cinema-layout-dock .cinema-resume-play { min-height: 34px; padding: 8px 14px; font-size: 12px !important; }
+.cinema-layout-dock .cinema-resume-here { padding: 5px 10px; font-size: 11px !important; }
+.cinema-screen:fullscreen .cinema-resume-play { min-height: 54px; padding: 15px 28px; font-size: 16px !important; }
+@media (prefers-reduced-motion: reduce) { .cinema-resume { animation: none; } .cinema-resume-play { transition: none; } }
 .cinema-screen:fullscreen .cinema-loading { top: 28px; left: 28px; padding: 10px 15px; font-size: 13px; }
 .cinema-skip { position: absolute; right: 16px; bottom: 64px; z-index: 2; display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 9px 15px; border: 1px solid #e5c17c80; border-radius: 8px; background: #0b0d10d9; color: #f4eee3; font-size: 12px; font-weight: 600; letter-spacing: .01em; box-shadow: 0 6px 24px #0008; backdrop-filter: blur(6px); cursor: pointer; animation: cinema-skip-in .28s ease-out both; }
 .cinema-skip:hover { background: var(--cinema-gold); color: #221d15; border-color: var(--cinema-gold); }

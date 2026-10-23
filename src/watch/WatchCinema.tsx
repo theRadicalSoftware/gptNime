@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronLeft, ChevronRight, Clapperboard, ExternalLink, FileVideo, Film, FolderOpen, Info, Link2, LoaderCircle, Maximize2, Minimize2, MonitorUp, PictureInPicture2, Play, RotateCcw, Search, SkipForward, Subtitles, X } from 'lucide-react'
-import type { Language, WatchRequest, WatchTitle } from './watchState'
-import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, readWatchState, recentWatch, relayUrl, relayViewer, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeWatchState } from './watchState'
+import type { Language, PlaybackPosition, WatchRequest, WatchTitle } from './watchState'
+import { clockLabel, episodeLabel, firstEpisode, localPlaybackBrowser, mediaUrl, playedInCinema, readCinemaSession, readWatchState, recentWatch, relayUrl, relayViewer, sourceFingerprint, WCO_CATALOGUES, WCO_SEARCH, wcoPage, writeCinemaSession, writeWatchState } from './watchState'
 import StoryNext, { type StoryProgress } from '../library/StoryNext'
 import type { RelationInfo } from '../library/model'
 import type { StoryStep } from '../library/story'
@@ -20,9 +20,10 @@ type Props = {
 }
 // What comes after a finale, supplied by the library.
 type Story = { find: (id: string) => Promise<StoryStep | null>; progress: (anilistId: number) => StoryProgress | undefined; start: (fromId: string, relation: RelationInfo, plan: boolean) => Promise<void> }
-type PlaybackPosition = { time: number; paused: boolean; rate: number; volume: number; muted: boolean }
 type Preparation = { url?: string; language?: Language; search?: boolean; choose?: boolean; refresh?: boolean; continuation?: PlaybackPosition }
 type Match = { url: string; title: string; language?: Language }
+// After a refresh: send the restored player back to its pop-out or float, or keep it here.
+type Reopen = { kind: 'window' | 'float'; run: () => void; dismiss: () => void }
 type Selection = { id: string; episode: number; intent: number; preparation?: Preparation }
 type Layout = 'cinema' | 'dock' | 'window'
 type PictureWindow = Window & { documentPictureInPicture?: { requestWindow: (options: { width: number; height: number }) => Promise<Window> } }
@@ -38,6 +39,14 @@ function bufferedAhead(video: HTMLVideoElement) {
     if (video.buffered.start(index) <= video.currentTime + 0.1 && video.currentTime <= video.buffered.end(index)) return video.buffered.end(index)
   }
   return video.currentTime
+}
+
+// A refresh resumes at the same moment. A player that was popped out or
+// floating waits there, paused, for the click that sends it back out.
+function resumePreparation(request: WatchRequest | null): Preparation | undefined {
+  const resume = request?.resume
+  if (!resume) return undefined
+  return { continuation: { ...resume.position, paused: resume.position.paused || resume.layout === 'window' || resume.layout === 'float' } }
 }
 
 // One unfinished transfer per video. A quick pop-out/pop-in keeps the first
@@ -89,9 +98,15 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
   const [selection, setSelection] = useState<Selection>(() => {
     const last = request ? null : recentWatch(entries)
     const entry = entries.find((item) => item.id === request?.id) || last?.entry || entries[0]
-    return { id: entry?.id || '', episode: request?.episode || last?.episode || (entry ? firstEpisode(entry) : 1), intent: request ? 1 : 0 }
+    return { id: entry?.id || '', episode: request?.episode || last?.episode || (entry ? firstEpisode(entry) : 1), intent: request ? 1 : 0, preparation: resumePreparation(request) }
   })
-  const [layout, setLayout] = useState<Layout>('cinema')
+  const [layout, setLayout] = useState<Layout>(request?.resume?.layout === 'dock' ? 'dock' : 'cinema')
+  // A refresh closes the pop-out window and the float; browsers reopen them
+  // only from a click, so the restored player offers that click.
+  const [reopen, setReopen] = useState<{ kind: 'window' | 'float'; key: string } | null>(() => {
+    const resume = request?.resume
+    return resume && (resume.layout === 'window' || resume.layout === 'float') && request.episode ? { kind: resume.layout, key: `${request.id}:${request.episode}` } : null
+  })
   const [query, setQuery] = useState('')
   const [windowError, setWindowError] = useState('')
   // 'live': this cinema's video is floating. 'waiting': the floating window
@@ -105,6 +120,8 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
   const closeRef = useRef(onClose)
   closeRef.current = onClose
   const entry = entries.find((item) => item.id === selection.id)
+  const sessionRef = useRef({ entry, episode: selection.episode, layout, floating: false })
+  sessionRef.current = { entry, episode: selection.episode, layout, floating: floating === 'live' }
   const lastRequest = useRef(request?.serial)
   const hoverPreparation = useRef<(() => void) | null>(null)
   useEffect(() => () => hoverPreparation.current?.(), [])
@@ -117,11 +134,34 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
     host.className = 'cinema-portal'
     document.body.append(host)
     const returnFocus = document.activeElement as HTMLElement | null
-    const beforeUnload = () => childRef.current?.close()
+    // Before the pop-out closes with the page, note what was on screen for the next load.
+    // The first of beforeunload and pagehide wins: by pagehide, the closing
+    // pop-out may already have handed the video back to this page.
+    let rememberedAt = 0
+    const remember = () => {
+      if (Date.now() - rememberedAt < 2000) return
+      rememberedAt = Date.now()
+      const video = host.querySelector('video')
+      const current = sessionRef.current
+      if (!current.entry || !video || video.readyState < 1 || video.ended || video.dataset.cinemaMoving || !/^https?:|^\//.test(video.getAttribute('src') || '')) {
+        // Keep a restore still loading this episode; anything else would bring back an old moment.
+        const saved = readCinemaSession()
+        if (saved && !(video?.dataset.cinemaMoving || (!video?.ended && saved.anilistId === current.entry?.anilistId && saved.episode === current.episode))) writeCinemaSession(null)
+        return
+      }
+      writeCinemaSession({
+        anilistId: current.entry.anilistId, episode: current.episode, savedAt: Date.now(),
+        position: { time: video.currentTime, paused: video.paused, rate: video.playbackRate, volume: video.volume, muted: video.muted },
+        layout: current.floating ? 'float' : current.layout,
+      })
+    }
+    const beforeUnload = () => { remember(); childRef.current?.close() }
     const playing = () => setWindowError('')
     window.addEventListener('beforeunload', beforeUnload)
+    window.addEventListener('pagehide', remember)
     host.addEventListener('playing', playing, true)
     return () => {
+      window.removeEventListener('pagehide', remember)
       restoreRef.current?.()
       childRef.current?.close()
       host.remove()
@@ -138,7 +178,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
     if (request?.serial === lastRequest.current) return
     lastRequest.current = request?.serial
     const requested = entries.find((item) => item.id === request?.id)
-    if (requested) setSelection((previous) => ({ id: requested.id, episode: request?.episode || firstEpisode(requested), intent: previous.intent + 1 }))
+    if (requested) setSelection((previous) => ({ id: requested.id, episode: request?.episode || firstEpisode(requested), intent: previous.intent + 1, preparation: resumePreparation(request) }))
     if (childRef.current) childRef.current.focus()
     else setLayout('cinema')
   }, [entries, request])
@@ -323,7 +363,7 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
         {windowError && <p className="cinema-message cinema-error" role="alert">{windowError}</p>}
         <div className="cinema-workspace">
           <div className="cinema-main">
-            {entry ? <EpisodePlayer key={`${entry.id}:${selection.episode}`} entry={entry} episode={selection.episode} intent={selection.intent} preparation={selection.preparation} onComplete={onComplete} story={story} onEpisode={(episode, preparation) => setSelection((previous) => ({ id: entry.id, episode, preparation, intent: previous.intent + 1 }))} onRevealSource={() => { if (layout === 'dock') setLayout('cinema') }} onDetails={() => { if (layout !== 'window') setLayout('dock'); onDetails(entry.id) }} /> : <div className="cinema-empty"><Film size={38} /><h3>{entries.length ? 'Choose your next watch' : 'Your cinema starts here'}</h3><p>{entries.length ? 'Pick a title from your library to open its watch desk.' : 'Add a show or movie to your library, then press Watch.'}</p>{!entries.length && <button className="cinema-button primary" onClick={onClose}>Back to gptNime</button>}</div>}
+            {entry ? <EpisodePlayer key={`${entry.id}:${selection.episode}`} entry={entry} episode={selection.episode} intent={selection.intent} preparation={selection.preparation} onComplete={onComplete} story={story} reopen={reopen?.key === `${entry.id}:${selection.episode}` ? { kind: reopen.kind, run: () => { setReopen(null); if (reopen.kind === 'window') void popOut(); else void floatVideo() }, dismiss: () => setReopen(null) } : undefined} onEpisode={(episode, preparation) => setSelection((previous) => ({ id: entry.id, episode, preparation, intent: previous.intent + 1 }))} onRevealSource={() => { if (layout === 'dock') setLayout('cinema') }} onDetails={() => { if (layout !== 'window') setLayout('dock'); onDetails(entry.id) }} /> : <div className="cinema-empty"><Film size={38} /><h3>{entries.length ? 'Choose your next watch' : 'Your cinema starts here'}</h3><p>{entries.length ? 'Pick a title from your library to open its watch desk.' : 'Add a show or movie to your library, then press Watch.'}</p>{!entries.length && <button className="cinema-button primary" onClick={onClose}>Back to gptNime</button>}</div>}
           </div>
           <aside className="cinema-library">
             <div className="cinema-library-heading"><div><span className="eyebrow">Your collection</span><h3>Tonight’s lineup</h3></div><span className="cinema-count">{entries.length}</span></div>
@@ -343,8 +383,8 @@ export default function WatchCinema({ entries, request, onComplete, onDetails, o
 
 type Source = { url: string; name: string; key: string; local: boolean; autoplay?: boolean; provider?: 'wco'; language?: Language; playbackId?: string; cached?: boolean; continuation?: PlaybackPosition; relayed?: boolean }
 
-function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story, onEpisode, onDetails, onRevealSource }: {
-  entry: WatchTitle; episode: number; intent: number; preparation?: Preparation; onComplete: Props['onComplete']; story: Story; onEpisode: (episode: number, preparation?: Preparation) => void; onDetails: () => void; onRevealSource: () => void
+function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story, reopen, onEpisode, onDetails, onRevealSource }: {
+  entry: WatchTitle; episode: number; intent: number; preparation?: Preparation; onComplete: Props['onComplete']; story: Story; reopen?: Reopen; onEpisode: (episode: number, preparation?: Preparation) => void; onDetails: () => void; onRevealSource: () => void
 }) {
   const [settings, setSettings] = useState(readWatchState)
   const [infoOpen, setInfoOpen] = useState(false)
@@ -362,6 +402,8 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [mediaError, setMediaError] = useState('')
+  // The browser wants a click before playing with sound, as after a refresh.
+  const [playBlocked, setPlayBlocked] = useState(false)
   const [loading, setLoading] = useState(false)
   const [providerAvailable, setProviderAvailable] = useState(false)
   const [hiddenPreparation, setHiddenPreparation] = useState(false)
@@ -607,6 +649,8 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
   }, [bookmarkPrefix, entry.anilistId, episode])
 
   const bindVideo = useCallback((node: HTMLVideoElement | null) => {
+    // Leaving during the credits, by Next, autoplay or closing, still counts.
+    if (!node && videoRef.current && !videoRef.current.dataset.cinemaMoving) markRef.current(videoRef.current)
     if (!node) saveBookmark()
     videoRef.current = node
   }, [saveBookmark])
@@ -656,7 +700,11 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
 
   const startVideo = (video: HTMLVideoElement) => {
     autoplayAttempted.current = true
-    void video.play().catch((error) => { if (error?.name !== 'AbortError' && videoRef.current === video) setNotice((previous) => `${previous ? `${previous} ` : ''}Press play to start; your browser requires another click.`) })
+    void video.play().catch((error) => {
+      if (error?.name === 'AbortError' || videoRef.current !== video) return
+      if (error?.name === 'NotAllowedError') setPlayBlocked(true)
+      else setNotice((previous) => `${previous ? `${previous} ` : ''}Press play to start; your browser requires another click.`)
+    })
   }
 
   const restorePosition = (video: HTMLVideoElement, position: PlaybackPosition) => {
@@ -932,10 +980,25 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
       else merged.push([...range])
     }
     playedRanges.current = merged
-    if (!settings.autoMark || markedRef.current || episode !== progressRef.current + 1 || video.seeking || !Number.isFinite(video.duration) || video.duration <= 0) return
-    const playedSeconds = merged.reduce((total, range) => total + range[1] - range[0], 0)
-    if (playedSeconds / video.duration >= 0.9) { markedRef.current = true; onComplete(entry.id, episode) }
+    if (!video.seeking) markIfFinished(video)
   }
+
+  // An episode counts as watched once 90% of it has played, or half of it with
+  // the playhead in the closing credits (AniSkip's ending, or the last 15%):
+  // ending, Skip ending, Next and autoplay all pass through here. It must be
+  // the next unwatched episode, or follow one played in the cinema, so one
+  // missed mark doesn't stop the rest. Seeking ahead never adds watched time.
+  const markIfFinished = (video: HTMLVideoElement) => {
+    if (!settings.autoMark || markedRef.current || episode <= progressRef.current || !Number.isFinite(video.duration) || video.duration <= 0) return
+    const share = playedRanges.current.reduce((total, range) => total + range[1] - range[0], 0) / video.duration
+    const ending = skips.key === skipKey && skips.segments.some((segment) => segment.kind === 'ending' && video.currentTime >= segment.start - 1)
+    if (share < 0.9 && !(share >= 0.5 && (video.ended || ending || video.currentTime >= video.duration * 0.85))) return
+    if (episode !== progressRef.current + 1 && !playedInCinema(entry.anilistId, episode - 1)) return
+    markedRef.current = true
+    onComplete(entry.id, episode)
+  }
+  const markRef = useRef(markIfFinished)
+  markRef.current = markIfFinished
 
   // A skipped section counts as watched, so skipping the opening and ending
   // still reaches the 90% mark. An ending that runs to the end finishes it.
@@ -1010,6 +1073,8 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
               video.currentTime = time; setCurrentTime(time)
               setNotice((previous) => `${previous ? `${previous} ` : ''}Resumed at ${clockLabel(time)}.${source.autoplay ? '' : ' Press play when you’re ready.'}`)
             }
+            // Resuming after a refresh or another visit: the part before counts as watched.
+            if (!playedRanges.current.length && video.currentTime > 0) playedRanges.current = [[0, video.currentTime]]
           }} onCanPlay={() => {
             setLoading(false); setMediaError('')
             const video = videoRef.current
@@ -1017,12 +1082,21 @@ function EpisodePlayer({ entry, episode, intent, preparation, onComplete, story,
             if (video && source.autoplay && !autoplayAttempted.current && !video.dataset.cinemaMoving) {
               startVideo(video)
             }
-          }} onWaiting={() => setLoading(true)} onPlaying={() => { startedRef.current = true; setPlaying(true); setLoading(false); setMediaError(''); setEnded(false); setUpNext(null) }} onTimeUpdate={handleTime} onPause={() => { setPlaying(false); saveBookmark() }} onEnded={() => finishRef.current()} onError={handleMediaError}>
+          }} onWaiting={() => setLoading(true)} onPlaying={() => { startedRef.current = true; setPlayBlocked(false); reopen?.dismiss(); setPlaying(true); setLoading(false); setMediaError(''); setEnded(false); setUpNext(null) }} onTimeUpdate={handleTime} onPause={() => { setPlaying(false); saveBookmark() }} onEnded={() => finishRef.current()} onError={handleMediaError}>
           {subtitle && <track key={subtitle.url} src={subtitle.url} kind="subtitles" srcLang="en" label={subtitle.name} default onError={() => setError('These subtitles could not be loaded. Choose a valid WebVTT (.vtt) file.')} />}
         </video>
         {!mediaError && (recovery?.key === source.key && recovery.phase !== 'stopped'
           ? <span key={recovery.phase} className={`cinema-loading cinema-recovery is-${recovery.phase}`} role="status">{recovery.phase === 'back' ? <Check size={13} aria-hidden="true" /> : <LoaderCircle size={13} className="cinema-version-spinner" aria-hidden="true" />}{recovery.phase === 'back' ? `Picked up at ${clockLabel(recovery.at)}` : recovery.phase === 'fresh' && providerPhase === 'capacity' ? `WCO is busy · picking up at ${clockLabel(recovery.at)} once it’s free` : `${recovery.phase === 'fresh' ? 'Getting a fresh copy' : 'Reconnecting'} · picking up at ${clockLabel(recovery.at)}`}</span>
           : loading && <span className="cinema-loading" role="status">Loading video…</span>)}
+        {!mediaError && duration > 0 && (reopen || playBlocked) && <div className="cinema-resume">
+          <button className="cinema-resume-play" onClick={() => {
+            const video = videoRef.current
+            // The pop-out and float open from this click; playing starts alongside.
+            reopen?.run()
+            if (video) startVideo(video)
+          }}><Play size={17} fill="currentColor" aria-hidden="true" />{reopen ? `${reopen.kind === 'window' ? 'Pop out' : 'Float'} and continue at ${clockLabel(currentTime)}` : currentTime >= 1 ? `Continue at ${clockLabel(currentTime)}` : `Play ${itemLabel}`}</button>
+          {reopen && <button className="cinema-resume-here" onClick={() => { reopen.dismiss(); const video = videoRef.current; if (video) startVideo(video) }}>Watch here instead</button>}
+        </div>}
         {activeSkip && !mediaError && <button key={`${activeSkip.kind}:${activeSkip.start}`} className="cinema-skip" title="Times from AniSkip, a community database" onClick={() => skipSection(activeSkip)}>{skipLabels[activeSkip.kind]}<SkipForward size={14} fill="currentColor" /></button>}
         {mediaError && <div className="cinema-media-error" role="alert"><Film size={26} /><p>{mediaError}</p>{(source.provider === 'wco' || stoppedAt !== null) && <button className="cinema-button primary" disabled={preparing} onClick={retryStream}>{preparing ? `Preparing ${itemLabel}…` : stoppedAt !== null ? `Retry from ${clockLabel(stoppedAt)}` : `Retry ${itemLabel}`}</button>}<button className="cinema-button" onClick={() => { stallRef.current = null; setRecovery(null); clearSource() }}>Choose another source</button></div>}
       </> : <div className="cinema-screen-intro">
